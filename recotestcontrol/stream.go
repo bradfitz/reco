@@ -117,12 +117,12 @@ func (s *Server) serveMapStream(w http.ResponseWriter, r *http.Request, req *tai
 				return
 			}
 		} else if changes := watch.take(); changes.Len() != 0 {
-			res = deltaResponse(req, changes)
+			res = deltaResponse(req, changes, s.ModifyFirstMapResponse == nil)
 			if res == nil {
 				return
 			}
 		}
-		if s.canGenerateAutomaticMapResponseFor(req.NodeKey) && res != nil {
+		if s.canGenerateAutomaticMapResponseFor(req.NodeKey) && res != nil && (first || !emptyDelta(res)) {
 			if first && s.ModifyFirstMapResponse != nil {
 				s.ModifyFirstMapResponse(res, req)
 			}

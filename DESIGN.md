@@ -96,12 +96,23 @@ Packet policy ignores endpoint/disco changes, including with an explicit
 signed-address allowlist. Raw response/ping FIFO queues and session replacement
 remain outside the dataflow graph.
 
+The encoder now emits capability-version-gated `PeersChangedPatch` fields for
+supported changes to existing peers. It compares only the coalesced before/after
+records for touched peers, after personalization, and suppresses no-op changes.
+New peers and unsupported fields use `PeersChanged`; self updates still use a
+whole `Node`. A wire adapter preserves explicit empty collections and non-nil
+zero keys/timestamps rather than letting the client schema's JSON tags omit them.
+JSON round-trip and real control-client tests cover clears and patch application.
+
 This is deliberately test-server easy mode: configuration setters still cause
-full refreshes, changed peers are whole node records rather than field patches,
-and a stream's pending change count is bounded but not its byte size. Existing
-core APIs were sufficient; no application-specific machinery was added to reco.
-The next possible application helpers are incremental per-node override joins
-and finer-grained peer-patch encoding, not a production control implementation.
+full refreshes, and a stream's pending change count is bounded but not its byte
+size. Clearing unpatchable zero/nil fields also requires a full peer refresh
+because the current client's replacement-to-patch optimization is lossy for
+those transitions. Custom initial-response hooks opt out of server-side patches
+because their baseline may differ from the graph. Existing core APIs were
+sufficient; no application-specific machinery was added to reco. The next
+possible application helper is an incremental per-node override join, not a
+production control implementation.
 
 ### Node Class Names
 

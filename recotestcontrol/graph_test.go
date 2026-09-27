@@ -55,11 +55,11 @@ func TestCoalescedPeerDelta(t *testing.T) {
 	if c.ChangeCount() != 1 {
 		t.Fatalf("changed entries = %d, want 1", c.ChangeCount())
 	}
-	r := deltaResponse(&tailcfg.MapRequest{NodeKey: ns[0].Key}, c)
-	if len(r.Peers) != 0 || len(r.PeersChanged) != 1 || r.Node != nil || r.PacketFilter != nil {
+	r := deltaResponse(&tailcfg.MapRequest{NodeKey: ns[0].Key, Version: tailcfg.CurrentCapabilityVersion}, c, true)
+	if len(r.Peers) != 0 || len(r.PeersChangedPatch) != 1 || len(r.PeersChanged) != 0 || r.Node != nil || r.PacketFilter != nil {
 		t.Fatalf("not a one-peer delta: %+v", r)
 	}
-	if r.PeersChanged[0].DiscoKey != ns[1].DiscoKey {
+	if r.PeersChangedPatch[0].DiscoKey == nil || *r.PeersChangedPatch[0].DiscoKey != ns[1].DiscoKey {
 		t.Fatal("lost final disco key")
 	}
 	old, _ := initial.Nodes.Get(ns[1].Key)
@@ -81,14 +81,14 @@ func TestPolicyDependency(t *testing.T) {
 	if c.After().Value().Policy != initial.Policy {
 		t.Fatal("endpoint change rebuilt signed-address policy")
 	}
-	r := deltaResponse(&tailcfg.MapRequest{NodeKey: ns[0].Key}, c)
-	if r.PacketFilter != nil || len(r.PeersChanged) != 1 || len(r.Peers) != 0 {
+	r := deltaResponse(&tailcfg.MapRequest{NodeKey: ns[0].Key, Version: tailcfg.CurrentCapabilityVersion}, c, true)
+	if r.PacketFilter != nil || len(r.PeersChangedPatch) != 1 || len(r.PeersChanged) != 0 || len(r.Peers) != 0 {
 		t.Fatal("endpoint update expanded to full response")
 	}
 	ns[1].Addresses = []netip.Prefix{netip.MustParsePrefix("100.90.0.1/32")}
 	s.UpdateNode(ns[1])
 	c = w.take()
-	r = deltaResponse(&tailcfg.MapRequest{NodeKey: ns[0].Key}, c)
+	r = deltaResponse(&tailcfg.MapRequest{NodeKey: ns[0].Key, Version: tailcfg.CurrentCapabilityVersion}, c, true)
 	if r.PacketFilter == nil || c.After().Value().Policy == initial.Policy {
 		t.Fatal("address change did not rebuild policy")
 	}
@@ -103,7 +103,7 @@ func TestLastPeerRemoval(t *testing.T) {
 	s.mu.Lock()
 	s.deleteNodeLocked(ns[1].Key)
 	s.mu.Unlock()
-	r := deltaResponse(&tailcfg.MapRequest{NodeKey: ns[0].Key}, w.take())
+	r := deltaResponse(&tailcfg.MapRequest{NodeKey: ns[0].Key, Version: tailcfg.CurrentCapabilityVersion}, w.take(), true)
 	if !slices.Equal(r.PeersRemoved, []tailcfg.NodeID{ns[1].ID}) {
 		t.Fatalf("removals = %v", r.PeersRemoved)
 	}
@@ -118,7 +118,7 @@ func TestRotatedKeyRetirement(t *testing.T) {
 	s.mu.Lock()
 	s.retireNodeKeyLocked(ns[1].Key, replacement.Key)
 	s.mu.Unlock()
-	r := deltaResponse(&tailcfg.MapRequest{NodeKey: ns[0].Key}, w.take())
+	r := deltaResponse(&tailcfg.MapRequest{NodeKey: ns[0].Key, Version: tailcfg.CurrentCapabilityVersion}, w.take(), true)
 	if len(r.PeersRemoved) != 0 || len(r.PeersChanged) != 1 || r.PeersChanged[0].Key != replacement.Key {
 		t.Fatalf("key retirement removed the rotated peer: %+v", r)
 	}
@@ -131,7 +131,7 @@ func TestConfigRefreshWithLastPeerRemoval(t *testing.T) {
 	s.deleteNodeLocked(ns[1].Key)
 	s.mu.Unlock()
 	s.AddDNSRecords(tailcfg.DNSRecord{Name: "example.test", Type: "A", Value: "100.64.0.1"})
-	r := deltaResponse(&tailcfg.MapRequest{NodeKey: ns[0].Key}, w.take())
+	r := deltaResponse(&tailcfg.MapRequest{NodeKey: ns[0].Key, Version: tailcfg.CurrentCapabilityVersion}, w.take(), true)
 	if len(r.Peers) != 0 || !slices.Equal(r.PeersRemoved, []tailcfg.NodeID{ns[1].ID}) || r.DNSConfig == nil {
 		t.Fatalf("empty full peer list must retain explicit removal: %+v", r)
 	}
@@ -166,12 +166,12 @@ func TestSelfAndConfigChanges(t *testing.T) {
 	_, w := watchGraph(t, s)
 	ns[0].DiscoKey = key.NewDisco().Public()
 	s.UpdateNode(ns[0])
-	r := deltaResponse(&tailcfg.MapRequest{NodeKey: ns[0].Key}, w.take())
+	r := deltaResponse(&tailcfg.MapRequest{NodeKey: ns[0].Key, Version: tailcfg.CurrentCapabilityVersion}, w.take(), true)
 	if r.Node == nil || r.Node.DiscoKey != ns[0].DiscoKey || len(r.PeersChanged) != 0 || r.PacketFilter != nil {
 		t.Fatal("not a self-only delta")
 	}
 	s.SetExpireAllNodes(true)
-	r = deltaResponse(&tailcfg.MapRequest{NodeKey: ns[0].Key}, w.take())
+	r = deltaResponse(&tailcfg.MapRequest{NodeKey: ns[0].Key, Version: tailcfg.CurrentCapabilityVersion}, w.take(), true)
 	if r.Node.KeyExpiry.IsZero() {
 		t.Fatal("expiry change not delivered")
 	}
@@ -189,7 +189,7 @@ func TestHostnameDNSDependency(t *testing.T) {
 	hi.Hostname = "renamed"
 	ns[0].Hostinfo = hi.View()
 	s.UpdateNode(ns[0])
-	r := deltaResponse(&tailcfg.MapRequest{NodeKey: ns[0].Key}, w.take())
+	r := deltaResponse(&tailcfg.MapRequest{NodeKey: ns[0].Key, Version: tailcfg.CurrentCapabilityVersion}, w.take(), true)
 	if r.DNSConfig == nil || !slices.Contains(r.DNSConfig.CertDomains, "renamed.demo.example") {
 		t.Fatal("hostname delta did not update DNS certificate name")
 	}
@@ -202,7 +202,7 @@ func TestSnapshotIsolation(t *testing.T) {
 	s, ns := testNodes(t, 2)
 	route := netip.MustParsePrefix("10.0.0.0/8")
 	s.SetSubnetRoutes(ns[1].Key, []netip.Prefix{route})
-	req := &tailcfg.MapRequest{NodeKey: ns[0].Key}
+	req := &tailcfg.MapRequest{NodeKey: ns[0].Key, Version: tailcfg.CurrentCapabilityVersion}
 	r := must.Get(s.MapResponse(req))
 	r.Peers[0].PrimaryRoutes[0] = netip.Prefix{}
 	r.Peers[0].Addresses[0] = netip.Prefix{}
@@ -228,11 +228,12 @@ func TestSinglePeerUpdateAllocations(t *testing.T) {
 					s.SetUnsignedPeerAPIOnly(ns[count-1].Key, true)
 				}
 				_, w := watchGraph(t, s)
-				req := &tailcfg.MapRequest{NodeKey: ns[0].Key}
+				req := &tailcfg.MapRequest{NodeKey: ns[0].Key, Version: tailcfg.CurrentCapabilityVersion}
 				return testing.AllocsPerRun(30, func() {
+					ns[1].HomeDERP++
 					s.UpdateNode(ns[1])
-					r := deltaResponse(req, w.take())
-					if len(r.PeersChanged) != 1 || r.PacketFilter != nil {
+					r := deltaResponse(req, w.take(), true)
+					if len(r.PeersChangedPatch) != 1 || len(r.PeersChanged) != 0 || r.PacketFilter != nil {
 						t.Fatal("not a point delta")
 					}
 				})
@@ -251,12 +252,13 @@ func BenchmarkPeerDelta(b *testing.B) {
 		b.Run(fmt.Sprint(count), func(b *testing.B) {
 			s, ns := testNodes(b, count)
 			_, w := watchGraph(b, s)
-			req := &tailcfg.MapRequest{NodeKey: ns[0].Key}
+			req := &tailcfg.MapRequest{NodeKey: ns[0].Key, Version: tailcfg.CurrentCapabilityVersion}
 			b.ReportAllocs()
 			b.ResetTimer()
 			for b.Loop() {
+				ns[1].HomeDERP++
 				s.UpdateNode(ns[1])
-				deltaResponse(req, w.take())
+				deltaResponse(req, w.take(), true)
 			}
 		})
 	}

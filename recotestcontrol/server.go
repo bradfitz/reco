@@ -1491,7 +1491,7 @@ func (s *Server) takeRawMapMessage(nk key.NodePublic) (mapResJSON []byte, ok boo
 	}
 
 	var err error
-	mapResJSON, err = json.Marshal(mr)
+	mapResJSON, err = s.encode(false, mr)
 	if err != nil {
 		panic(err)
 	}
@@ -1569,6 +1569,9 @@ func (s *Server) decode(msg []byte, v any) error {
 }
 
 func (s *Server) encode(compress bool, v any) (b []byte, err error) {
+	if r, ok := v.(*tailcfg.MapResponse); ok {
+		v = mapResponseForWire(r)
+	}
 	var isBytes bool
 	if b, isBytes = v.([]byte); !isBytes {
 		b, err = json.Marshal(v)

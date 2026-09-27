@@ -26,12 +26,26 @@ Nodes and profiles use persistent reco maps. A small application-local
 atomic snapshot/watch, and each stream coalesces unsent changes with
 `StructChanges.Then`. Encoding and network I/O happen outside graph callbacks.
 
-The first response is full; subsequent node changes become `PeersChanged`,
-`PeersRemoved`, or a self `Node` update. These are whole changed **nodes**, not
-yet field-level `PeerChange` patches. A lite update only returns HTTP status;
-it does not render a full map. Ordinary updates process touched entries plus
-persistent-map path copying, per subscriber, rather than walking all peers.
-The allowlist policy also stays unchanged on endpoint/disco updates.
+The first response is full. Subsequent changes to existing peers use
+`PeersChangedPatch` when the recipient's capability version supports the changed
+fields: endpoints, DERP home, keys, signatures, expiry, online/last-seen status,
+capability version, and capability maps. New peers and changes outside that
+schema use complete `PeersChanged` entries. Removals use `PeersRemoved`; the
+protocol still requires a whole `Node` for self updates.
+
+Patch selection compares only touched peers, after recipient-specific rendering,
+using the coalesced before/after values. It costs the size of those peers' own
+fields, not the size of the tailnet. Mixed batches use disjoint peer IDs for
+patches, replacements, and removals. No-op changes (including A -> B -> A) are
+suppressed. No per-stream deep snapshot cache is needed. A lite update only
+returns HTTP status; it does not render a full map. The allowlist policy also
+stays unchanged on endpoint/disco updates.
+
+The server's small wire adapter preserves explicit empty endpoints, capability
+maps, and signatures. It also preserves non-nil pointers to zero keys and
+timestamps, which the client-facing schema's `omitzero` tags would otherwise
+omit. These operations are tested through JSON and the real control client,
+over Noise with compressed map responses.
 
 Session replacement and FIFO ping/raw-response injection remain HTTP concerns,
 not graph subscriptions. Disconnecting unregisters the subscription. Pending
@@ -63,8 +77,8 @@ GOFLAGS=-tags=experiment.reco go test \
 If `go.work` already exists, use `go work use` instead of `go work init`.
 `GOFLAGS` also propagates the tag to integration tests' subprocess builds.
 The workspace avoids committing local replacement paths to either module.
-The `control/tsp` peer-update test accepts both `Peers` and `PeersChanged`, as
-permitted by the protocol, so it works with either server.
+The `control/tsp` peer-update test accepts `Peers`, `PeersChanged`, and
+`PeersChangedPatch`, as permitted by the protocol, so it works with either server.
 
 In this repository, `GOWORK=off go test ./...` verifies the public pinned
 dependency independently of the workspace. Use `go test -race ./...` for
@@ -77,6 +91,14 @@ for the incremental path benchmark.
 - Configuration setters, including per-node route/capability overrides, currently
   replace one immutable configuration value and trigger full responses. They
   are not yet fine-grained graph joins.
+- Clearing DERP home/capability version to zero or online/last-seen status to
+  nil requires a full peer refresh. Those transitions cannot be expressed as
+  patches, and this client revision incorrectly patchifies the corresponding
+  whole-node replacements. A full `Peers` list bypasses that conversion. These
+  exceptional refreshes are covered by a real-client regression test.
+- Streams with `ModifyFirstMapResponse` opt out of server-side peer patches:
+  customized initial peers need not match the graph's before values. Their
+  touched peers continue to use whole-node replacements.
 - A signed-node address or membership change may rebuild the explicit packet
   filter. Endpoint/disco changes do not. Filter rules are whole-value wire fields.
 - The shared record is not a production per-recipient authorization graph.
@@ -87,5 +109,5 @@ for the incremental path benchmark.
   those environments needs their own infrastructure.
 
 The existing reco primitives were sufficient for this version; no new core API
-was required. Useful next steps are incremental joins for per-node overrides,
-field-level peer patches, and byte-bounded backpressure.
+was required. Useful next steps are incremental joins for per-node overrides
+and byte-bounded backpressure.

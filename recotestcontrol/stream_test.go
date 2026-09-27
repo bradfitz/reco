@@ -70,7 +70,7 @@ func TestStreamDeltasCommandsAndCleanup(t *testing.T) {
 	}
 	ns[1].DiscoKey = key.NewDisco().Public()
 	s.UpdateNode(ns[1])
-	if delta := readMapFrame(t, res.Body); len(delta.PeersChanged) != 1 || len(delta.Peers) != 0 || delta.PeersChanged[0].DiscoKey != ns[1].DiscoKey {
+	if delta := readMapFrame(t, res.Body); len(delta.PeersChangedPatch) != 1 || len(delta.PeersChanged) != 0 || len(delta.Peers) != 0 || delta.PeersChangedPatch[0].DiscoKey == nil || *delta.PeersChangedPatch[0].DiscoKey != ns[1].DiscoKey {
 		t.Fatalf("not a peer delta: %+v", delta)
 	}
 	// A lite map update receives only a status acknowledgement, while the
@@ -83,6 +83,19 @@ func TestStreamDeltasCommandsAndCleanup(t *testing.T) {
 	}
 	if delta := readMapFrame(t, res.Body); delta.Node == nil || delta.Node.DiscoKey != lite.DiscoKey || len(delta.Peers) != 0 {
 		t.Fatal("missing self delta")
+	}
+	// A repeated peer value should not create an empty map response.
+	s.UpdateNode(ns[1])
+	if !s.AddPingRequest(ns[0].Key, &tailcfg.PingRequest{URL: "https://noop.example/"}) {
+		t.Fatal("ping rejected")
+	}
+	if r := readMapFrame(t, res.Body); r.PingRequest == nil {
+		t.Fatalf("no-op emitted a map response: %+v", r)
+	}
+	ns[1].HomeDERP = 2
+	s.UpdateNode(ns[1])
+	if r := readMapFrame(t, res.Body); len(r.PeersChangedPatch) != 1 || r.PeersChangedPatch[0].DERPRegion != 2 {
+		t.Fatalf("expected DERP patch after no-op: %+v", r)
 	}
 	if !s.AddRawMapResponse(ns[0].Key, &tailcfg.MapResponse{Domain: "first"}) ||
 		!s.AddPingRequest(ns[0].Key, &tailcfg.PingRequest{URL: "https://ping.example/"}) ||
@@ -140,6 +153,25 @@ func TestStreamReplacement(t *testing.T) {
 	}
 	if r := readMapFrame(t, b.Body); r.PingRequest == nil {
 		t.Fatal("replacement did not get ping")
+	}
+}
+
+func TestModifiedInitialPeersDisablePatches(t *testing.T) {
+	s, ns := testNodes(t, 2)
+	s.ModifyFirstMapResponse = func(r *tailcfg.MapResponse, _ *tailcfg.MapRequest) { r.Peers[0].Name = "custom-initial-name" }
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { s.serveMap(w, r, ns[0].Machine) }))
+	defer httpServer.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	stream := openMapStream(t, ctx, httpServer.URL, ns[0].Key)
+	if first := readMapFrame(t, stream.Body); first.Peers[0].Name != "custom-initial-name" {
+		t.Fatal("initial hook not applied")
+	}
+	ns[1].DiscoKey = key.NewDisco().Public()
+	s.UpdateNode(ns[1])
+	r := readMapFrame(t, stream.Body)
+	if len(r.PeersChanged) != 1 || len(r.PeersChangedPatch) != 0 || r.PeersChanged[0].Name != ns[1].Name {
+		t.Fatalf("patch assumed a graph baseline after a custom initial response: %+v", r)
 	}
 }
 

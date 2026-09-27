@@ -118,7 +118,9 @@ func peerFor(s *renderConfig, nk key.NodePublic, n *tailcfg.Node) *tailcfg.Node 
 
 // deltaResponse translates only touched graph entries. Global policy changes,
 // but not endpoint updates, can need a full refresh.
-func deltaResponse(req *tailcfg.MapRequest, changes reco.StructChanges[mapMeta]) *tailcfg.MapResponse {
+// allowPeerPatches is false for streams with a ModifyFirstMapResponse hook:
+// their customized initial peers need not match the graph's before values.
+func deltaResponse(req *tailcfg.MapRequest, changes reco.StructChanges[mapMeta], allowPeerPatches bool) *tailcfg.MapResponse {
 	meta := changes.After().Value()
 	if _, _, changed := configField.Change(changes); changed {
 		res := fullResponse(req, meta)
@@ -132,6 +134,14 @@ func deltaResponse(req *tailcfg.MapRequest, changes reco.StructChanges[mapMeta])
 		return nil
 	}
 	res := new(tailcfg.MapResponse)
+	// Key rotation can retire a second public key for the same wire NodeID.
+	// Keep that replacement explicit rather than suppressing it as a no-op.
+	retired := make(map[tailcfg.NodeID]bool)
+	for c := range reco.MapFieldChanges(nodesField, changes) {
+		if c.BeforeValid && !c.AfterValid {
+			retired[c.Before.ID] = true
+		}
+	}
 	if _, policy, changed := policyField.Change(changes); changed {
 		res.PacketFilter = policy.cloneRules()
 	}
@@ -142,7 +152,24 @@ func deltaResponse(req *tailcfg.MapRequest, changes reco.StructChanges[mapMeta])
 				res.DNSConfig = dnsFor(meta.Config, c.After)
 			}
 		} else if c.AfterValid && c.After.StableID != self.StableID {
-			res.PeersChanged = append(res.PeersChanged, peerFor(meta.Config, req.NodeKey, c.After))
+			after := peerFor(meta.Config, req.NodeKey, c.After)
+			if c.BeforeValid {
+				before := peerFor(meta.Config, req.NodeKey, c.Before)
+				if needsPeerRefresh(before, after) {
+					full := fullResponse(req, meta)
+					addRemovals(full, req, changes)
+					return full
+				}
+				if allowPeerPatches && !retired[after.ID] {
+					if patch, ok := peerPatch(before, after, req.Version); ok {
+						if patch != nil {
+							res.PeersChangedPatch = append(res.PeersChangedPatch, patch)
+						}
+						continue
+					}
+				}
+			}
+			res.PeersChanged = append(res.PeersChanged, after)
 		}
 	}
 	addRemovals(res, req, changes)
@@ -152,7 +179,16 @@ func deltaResponse(req *tailcfg.MapRequest, changes reco.StructChanges[mapMeta])
 		}
 	}
 	sort.Slice(res.PeersChanged, func(i, j int) bool { return res.PeersChanged[i].ID < res.PeersChanged[j].ID })
+	sort.Slice(res.PeersChangedPatch, func(i, j int) bool { return res.PeersChangedPatch[i].NodeID < res.PeersChangedPatch[j].NodeID })
 	return res
+}
+
+// emptyDelta covers the fields emitted by deltaResponse. In particular a
+// coalesced A -> B -> A peer change need not put an empty message on the wire.
+func emptyDelta(r *tailcfg.MapResponse) bool {
+	return r.Node == nil && r.DNSConfig == nil && r.PacketFilter == nil &&
+		len(r.Peers) == 0 && len(r.PeersChanged) == 0 && len(r.PeersChangedPatch) == 0 &&
+		len(r.PeersRemoved) == 0 && len(r.UserProfiles) == 0
 }
 
 func hostname(n *tailcfg.Node) string {
