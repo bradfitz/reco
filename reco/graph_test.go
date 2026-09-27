@@ -1,4 +1,4 @@
-package recontrol
+package reco
 
 import "testing"
 
@@ -13,7 +13,7 @@ func TestTypedStructDependenciesRecomputeAndSubscribe(t *testing.T) {
 	sum := Func("sum", struct {
 		First  Node[int]
 		Second Node[int]
-	}{First: first, Second: second}, func(ctx Context, in sumDeps) Result[int] {
+	}{First: first, Second: second}, func(eval Eval, in sumDeps) Result[int] {
 		return OK(in.First.Value() + in.Second.Value())
 	})
 
@@ -70,7 +70,7 @@ func TestInlineDependencies(t *testing.T) {
 		Deps(struct {
 			Name Node[string]
 		}{Name: name}),
-		func(ctx Context, in struct {
+		func(eval Eval, in struct {
 			Name string
 		}) Result[string] {
 			return OK("hello " + in.Name)
@@ -128,17 +128,94 @@ func TestSetAndMapTransactions(t *testing.T) {
 	}
 }
 
+func TestMapSubscriptionReportsOnlyTouchedKeys(t *testing.T) {
+	items := MapData[int, int]("items")
+	g := NewGraph()
+	if err := g.Register(items); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Update(func(tx *Tx) error {
+		for i := range 10_000 {
+			MapPut(tx, items, i, i)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var got MapEvent[int, int]
+	initial, sub, err := SubscribeMap(g, items, SubscribeOptions{}, func(ev MapEvent[int, int]) {
+		got = ev
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Unsubscribe()
+	if initial.Value().Len() != 10_000 {
+		t.Fatalf("initial size = %d, want 10000", initial.Value().Len())
+	}
+	if err := g.Update(func(tx *Tx) error {
+		MapPut(tx, items, 42, -1)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Changes) != 1 {
+		t.Fatalf("got %d changes, want 1", len(got.Changes))
+	}
+	change := got.Changes[0]
+	if change.Key != 42 || !change.BeforeValid || change.Before != 42 || !change.AfterValid || change.After != -1 {
+		t.Fatalf("change = %+v", change)
+	}
+}
+
+func TestFunctionPreservesMapChanges(t *testing.T) {
+	items := MapData[int, int]("items")
+	type deps struct {
+		Items Dep[MapSnapshot[int, int]]
+	}
+	view := Func("view", struct {
+		Items Node[MapSnapshot[int, int]]
+	}{Items: items}, func(_ Eval, in deps) Result[MapSnapshot[int, int]] {
+		return OK(in.Items.Value())
+	})
+	g := NewGraph()
+	if err := g.Register(view); err != nil {
+		t.Fatal(err)
+	}
+	var got MapEvent[int, int]
+	_, sub, err := SubscribeMap(g, view, SubscribeOptions{}, func(ev MapEvent[int, int]) {
+		got = ev
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Unsubscribe()
+	if err := g.Update(func(tx *Tx) error {
+		MapPut(tx, items, 7, 11)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Changes) != 1 || got.Changes[0].Key != 7 || got.Changes[0].After != 11 {
+		t.Fatalf("changes = %+v", got.Changes)
+	}
+	if got.Current.Version() != got.Version {
+		t.Fatalf("snapshot version = %d, event version = %d", got.Current.Version(), got.Version)
+	}
+}
+
 func TestCycleRejected(t *testing.T) {
 	a := Data[int]("a")
 	type deps struct {
 		B Dep[int]
 	}
-	b := Func("b", struct{ B Node[int] }{B: a}, func(ctx Context, in deps) Result[int] {
+	b := Func("b", struct{ B Node[int] }{B: a}, func(eval Eval, in deps) Result[int] {
 		return OK(in.B.Value())
 	})
 	a.def.kind = nodeFunc
 	a.def.deps = []depBinding{{name: "B", node: b.def, typ: typeOf[int]()}}
-	a.def.compute = func(Context, map[*nodeDef]nodeValue) nodeValue {
+	a.def.compute = func(Eval, map[*nodeDef]nodeValue) nodeValue {
 		return nodeValue{value: 1, valid: true}
 	}
 
@@ -157,7 +234,7 @@ func TestReflectionFailureExplodesEarly(t *testing.T) {
 	}()
 	_ = Func("bad", struct {
 		N Node[int]
-	}{N: n}, func(ctx Context, in struct {
+	}{N: n}, func(eval Eval, in struct {
 		N string
 	}) Result[string] {
 		return OK(in.N)
@@ -194,5 +271,31 @@ func TestSubscriptionUnsubscribe(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("events = %d, want 1", count)
+	}
+}
+
+func TestRead(t *testing.T) {
+	n := Data[int]("n")
+	g := NewGraph()
+	if err := g.Register(n); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := Read(g, n); err != nil {
+		t.Fatal(err)
+	} else if got.Valid() {
+		t.Fatal("uninitialized node is valid")
+	}
+	if err := g.Update(func(tx *Tx) error {
+		Set(tx, n, 42)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Read(g, n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Valid() || got.Value() != 42 {
+		t.Fatalf("Read = (%v, %v), want (42, valid)", got.Value(), got.Valid())
 	}
 }

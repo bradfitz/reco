@@ -1,4 +1,4 @@
-package recontrol
+package reco
 
 import (
 	"fmt"
@@ -14,11 +14,15 @@ func typeOf[T any]() reflect.Type {
 	return reflect.TypeOf(zero).Elem()
 }
 
-type Context struct {
-	graph *Graph
+// Eval represents one synchronous node evaluation. Use Input to read its
+// declared dependencies. It is not a cancellation or deadline context.
+// Do not retain an Eval after the computation returns.
+type Eval struct {
+	graph  *Graph
+	inputs map[*nodeDef]nodeValue
 }
 
-type computeFunc func(Context, map[*nodeDef]nodeValue) nodeValue
+type computeFunc func(Eval, map[*nodeDef]nodeValue) nodeValue
 
 type nodeValue struct {
 	value     any
@@ -60,10 +64,10 @@ type nodeHandle interface {
 
 var compileCache sync.Map // map[compileKey]compiledShape
 
-func compileFunc[DepsT any, Out any](deps any, compute func(Context, DepsT) Result[Out]) ([]depBinding, computeFunc, error) {
+func compileFunc[DepsT any, Out any](deps any, compute func(Eval, DepsT) Result[Out]) ([]depBinding, computeFunc, error) {
 	depsType := typeOf[DepsT]()
 	if depsType.Kind() != reflect.Struct {
-		return nil, nil, fmt.Errorf("recontrol: dependency input for %s must be a struct, got %s", typeOf[Out](), depsType)
+		return nil, nil, fmt.Errorf("reco: dependency input for %s must be a struct, got %s", typeOf[Out](), depsType)
 	}
 	computeType := reflect.TypeOf(compute)
 	inline := false
@@ -77,16 +81,16 @@ func compileFunc[DepsT any, Out any](deps any, compute func(Context, DepsT) Resu
 		depStruct = reflect.ValueOf(deps)
 	}
 	if !depStruct.IsValid() {
-		return nil, nil, fmt.Errorf("recontrol: nil dependency binding")
+		return nil, nil, fmt.Errorf("reco: nil dependency binding")
 	}
 	if depStruct.Kind() == reflect.Pointer {
 		if depStruct.IsNil() {
-			return nil, nil, fmt.Errorf("recontrol: nil dependency binding pointer")
+			return nil, nil, fmt.Errorf("reco: nil dependency binding pointer")
 		}
 		depStruct = depStruct.Elem()
 	}
 	if depStruct.Kind() != reflect.Struct {
-		return nil, nil, fmt.Errorf("recontrol: dependency binding must be a struct, got %s", depStruct.Type())
+		return nil, nil, fmt.Errorf("reco: dependency binding must be a struct, got %s", depStruct.Type())
 	}
 
 	key := compileKey{
@@ -110,7 +114,7 @@ func compileFunc[DepsT any, Out any](deps any, compute func(Context, DepsT) Resu
 	}
 
 	if depStruct.NumField() < len(shape.fields) {
-		return nil, nil, fmt.Errorf("recontrol: dependency binding has too few fields")
+		return nil, nil, fmt.Errorf("reco: dependency binding has too few fields")
 	}
 
 	bindings := make([]depBinding, len(shape.fields))
@@ -118,31 +122,33 @@ func compileFunc[DepsT any, Out any](deps any, compute func(Context, DepsT) Resu
 	for i, f := range shape.fields {
 		field := depStruct.Field(f.index)
 		if !field.IsValid() {
-			return nil, nil, fmt.Errorf("recontrol: missing dependency field %s", f.name)
+			return nil, nil, fmt.Errorf("reco: missing dependency field %s", f.name)
 		}
 		node, err := extractNode(field)
 		if err != nil {
-			return nil, nil, fmt.Errorf("recontrol: dependency %s: %w", f.name, err)
+			return nil, nil, fmt.Errorf("reco: dependency %s: %w", f.name, err)
 		}
 		if node.typ != f.typ {
-			return nil, nil, fmt.Errorf("recontrol: dependency %s has type %s, want %s", f.name, node.typ, f.typ)
+			return nil, nil, fmt.Errorf("reco: dependency %s has type %s, want %s", f.name, node.typ, f.typ)
 		}
 		bindings[i] = depBinding{name: f.name, node: node.def, typ: f.typ}
 		bindingByField[i] = i
 	}
 
-	adapter := func(ctx Context, vals map[*nodeDef]nodeValue) nodeValue {
+	adapter := func(eval Eval, vals map[*nodeDef]nodeValue) nodeValue {
 		var in DepsT
 		inVal := reflect.ValueOf(&in).Elem()
 		for i, f := range shape.fields {
 			depVal := vals[bindings[bindingByField[i]].node]
 			if inline {
-				inVal.Field(f.index).Set(reflect.ValueOf(depVal.value))
+				if depVal.value != nil {
+					inVal.Field(f.index).Set(reflect.ValueOf(depVal.value))
+				}
 			} else {
 				inVal.Field(f.index).Set(makeDepValue(inVal.Field(f.index).Type(), depVal))
 			}
 		}
-		res := compute(ctx, in)
+		res := compute(eval, in)
 		return nodeValue{
 			value:     res.Value,
 			valid:     true,
@@ -158,15 +164,15 @@ func compileShape(depsType reflect.Type, inline bool) (compiledShape, error) {
 	for i := 0; i < depsType.NumField(); i++ {
 		sf := depsType.Field(i)
 		if !sf.IsExported() {
-			return compiledShape{}, fmt.Errorf("recontrol: dependency field %s must be exported", sf.Name)
+			return compiledShape{}, fmt.Errorf("reco: dependency field %s must be exported", sf.Name)
 		}
 		ft := sf.Type
 		var valueType reflect.Type
 		if inline {
 			valueType = ft
 		} else {
-			if ft.Kind() != reflect.Struct || ft.PkgPath() != "recontrol" || !isGenericName(ft.Name(), "Dep") {
-				return compiledShape{}, fmt.Errorf("recontrol: dependency field %s must be Dep[T], got %s", sf.Name, ft)
+			if ft.Kind() != reflect.Struct || ft.PkgPath() != typeOf[Dep[any]]().PkgPath() || !isGenericName(ft.Name(), "Dep") {
+				return compiledShape{}, fmt.Errorf("reco: dependency field %s must be Dep[T], got %s", sf.Name, ft)
 			}
 			valueType = ft.Field(0).Type
 		}

@@ -1,4 +1,6 @@
-package recontrol
+package reco
+
+import "fmt"
 
 // Version is a monotonic graph-local version.
 type Version uint64
@@ -30,6 +32,21 @@ func (s Snapshot[T]) Valid() bool {
 
 func newSnapshot[T any](v T, version Version) Snapshot[T] {
 	return Snapshot[T]{value: v, version: version, valid: true}
+}
+
+// Read returns the latest value of a registered node.
+func Read[T any](g *Graph, node Node[T]) (Snapshot[T], error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	if node.def == nil {
+		return Snapshot[T]{}, fmt.Errorf("reco: zero node handle")
+	}
+	v, ok := g.nodes[node.def]
+	if !ok {
+		return Snapshot[T]{}, fmt.Errorf("reco: node %s is not registered", node.def.className)
+	}
+	return snapshotFromNodeValue[T](v), nil
 }
 
 // Event is delivered to subscribers when a node value changes.

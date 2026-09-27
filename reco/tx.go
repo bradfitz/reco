@@ -1,4 +1,4 @@
-package recontrol
+package reco
 
 import "fmt"
 
@@ -16,10 +16,10 @@ func Set[T any](tx *Tx, node Node[T], value T) {
 
 func (tx *Tx) mustData(def *nodeDef) {
 	if def == nil {
-		panic("recontrol: zero node handle")
+		panic("reco: zero node handle")
 	}
 	if def.kind != nodeData {
-		panic(fmt.Sprintf("recontrol: node %s is not a data node", def.key))
+		panic(fmt.Sprintf("reco: node %s is not a data node", def.className))
 	}
 }
 

@@ -1,4 +1,4 @@
-package recontrol
+package reco
 
 // Result is the value produced by a function node.
 //
