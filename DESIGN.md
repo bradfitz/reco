@@ -77,6 +77,32 @@ Implementation TODOs (webdemo/local primitives now in scope; remote work deferre
 - [ ] Test multi-process resolution with tuple keys, remote data and function
   watches, unsubscribe, and the agreed reconnect/resync behavior.
 
+### Reco-backed public test control server (implemented)
+
+`recotestcontrol` is an experimental replacement for the public Tailscale
+`tstest/integration/testcontrol` server, exercised through an `experiment.reco`
+build-tag alias in a separate Tailscale checkout. It uses no private production
+implementation. See [recotestcontrol/README.md](recotestcontrol/README.md) for
+provenance, the graph, test commands, and limitations.
+
+Each server owns one fixed graph: persistent node/profile map leaves and an
+immutable configuration leaf feed a packet-policy operator and `nodes.Struct`
+map metadata. HTTP streams use `SubscribeStruct` and coalesce with
+`StructChanges.Then`; the encoder consumes `MapFieldChanges`, not deep snapshot
+comparisons. Streams own subscriptions and unregister on exit; connections do
+not allocate permanent graph node definitions. Normal lite updates return only
+an HTTP acknowledgement and cause delta-sized peer/self updates on subscribers.
+Packet policy ignores endpoint/disco changes, including with an explicit
+signed-address allowlist. Raw response/ping FIFO queues and session replacement
+remain outside the dataflow graph.
+
+This is deliberately test-server easy mode: configuration setters still cause
+full refreshes, changed peers are whole node records rather than field patches,
+and a stream's pending change count is bounded but not its byte size. Existing
+core APIs were sufficient; no application-specific machinery was added to reco.
+The next possible application helpers are incremental per-node override joins
+and finer-grained peer-patch encoding, not a production control implementation.
+
 ### Node Class Names
 
 `reco.NodeClassName` is a defined string type naming a reusable node definition
