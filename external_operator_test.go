@@ -10,8 +10,8 @@ import (
 	"sync"
 	"testing"
 
-	"recontrol/reco"
-	"recontrol/reco/nodes"
+	"github.com/bradfitz/reco"
+	"github.com/bradfitz/reco/nodes"
 )
 
 // These implementations deliberately live outside package reco. They use no

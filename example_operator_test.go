@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"recontrol/reco"
+	"github.com/bradfitz/reco"
 )
 
 func ExampleOperator() {

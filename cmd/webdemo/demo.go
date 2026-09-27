@@ -13,10 +13,10 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/bradfitz/reco"
+	"github.com/bradfitz/reco/nodes"
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
-	"recontrol/reco"
-	"recontrol/reco/nodes"
 )
 
 //go:embed static/*

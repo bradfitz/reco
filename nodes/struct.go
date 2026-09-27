@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"reflect"
 
-	"recontrol/reco"
+	"github.com/bradfitz/reco"
 )
 
 // Struct assembles a typed immutable record from a struct of field input nodes.

@@ -1,9 +1,9 @@
-# Recontrol Design
+# Reco Design
 
 Status: living design document  
 Last updated: 2026-09-27
 
-This document is the working source of truth for the Recontrol prototype. It should be updated whenever the design, prototype scope, APIs, or unresolved questions change.
+This document is the working source of truth for the Reco prototype. It should be updated whenever the design, prototype scope, APIs, or unresolved questions change.
 
 Status convention: **implemented/current** describes the Go API today;
 **target/proposed/deferred** describes future distributed, durable, or scheduled
@@ -101,8 +101,9 @@ function versioning, or the remote addressing format.
 User's proposed application model (2026-09-27): maintain each recipient's final
 MapResponseMeta (MRM) as live immutable graph state. A subscriber translates
 its changes into the initial Tailscale MapResponse and subsequent wire deltas.
-See `map-protocol.md` for the protocol report. This is a requirements exercise
-for generic reco primitives, not a decision to resume control-server coding.
+See [notes/map-protocol.md](notes/map-protocol.md) for the public-source protocol
+report. This is a requirements exercise for generic reco primitives, not a
+decision to resume control-server coding.
 
 The single-process model now has StructSnapshot, nodes.Struct, SubscribeStruct,
 and StructChanges.Then, in addition to Operator/Func, persistent snapshots,
@@ -392,7 +393,7 @@ Future webdemo TODOs (requested, not needed in this first version):
 
 ## Overview
 
-Recontrol is intended to be a Go library for distributed reactive data binding.
+Reco is intended to be a Go library for distributed reactive data binding.
 
 The library should be generic enough for non-Tailscale applications. The first real application to keep in mind is a new Tailscale control/coordination server designed for easier maintenance and efficient scaling to large networks. In that environment, the main computed output is the rich, deep `tailcfg.MapResponse` value that a control server streams to clients. `MapResponse` includes the local node, peers, DNS configuration, packet filters, health/display messages, and other client-visible control-plane state.
 
@@ -404,7 +405,7 @@ The programming model is similar to a spreadsheet:
 - When data changes, affected computations are scheduled and recomputed.
 - Updates propagate through the dependency graph until the system reaches a fixed point.
 
-Unlike a local spreadsheet, Recontrol is designed for a distributed system where data and computation are partitioned across machines by customer. Normal node resolution includes local and remote nodes. An in-process multi-shard simulation is useful for deterministic tests, but cross-machine watches are part of the current target.
+Unlike a local spreadsheet, Reco is designed for a distributed system where data and computation are partitioned across machines by customer. Normal node resolution includes local and remote nodes. An in-process multi-shard simulation is useful for deterministic tests, but cross-machine watches are part of the current target.
 
 For the Tailscale use case, some `MapResponse` values may involve hundreds of thousands of nodes. The design must therefore avoid full recomputation and full diffing work that is linear or quadratic in the whole tailnet whenever only a small part of the input changes.
 
@@ -472,11 +473,11 @@ computation; pre-replicating every input is not a prerequisite for resolution.
 
 The main known workload is computing and streaming `tailcfg.MapResponse` values for Tailscale clients.
 
-Decision: `MapResponse` is not a special library primitive. It should be implemented by the Tailscale application as a normal Recontrol node.
+Decision: `MapResponse` is not a special library primitive. It should be implemented by the Tailscale application as a normal Reco node.
 
 Decision: the Tailscale application may compute an internal map-shaped representation, roughly `map[string]any`, where each top-level `MapResponse` field is a map key for the initial full response shape.
 
-Decision: Recontrol should not compute Tailscale wire deltas as graph nodes.
+Decision: Reco should not compute Tailscale wire deltas as graph nodes.
 Incremental collection subscriptions should preserve the exact changed keys so
 the watcher can encode a wire delta without scanning or diffing full snapshots.
 
@@ -493,7 +494,7 @@ Important protocol facts from `tailcfg.MapResponse`:
 - `PacketFilters` and `DisplayMessages` already use map-shaped patch semantics where nil values can delete entries, and special keys can clear prior state.
 - `CurrentCapabilityVersion` and older client versions matter. Different clients in the wild expect slightly different wire behavior.
 
-Implications for Recontrol:
+Implications for Reco:
 
 - The computed `MapResponse` node must know when it has reached its first fixed point so the server can serialize the initial complete response.
 - After the first complete response, the system should prefer protocol deltas over complete responses.
@@ -516,13 +517,19 @@ Open questions:
 
 ### Library Scope
 
-Decision: Recontrol should be a generic library that non-Tailscale applications can use.
+Decision: Reco should be a generic library that non-Tailscale applications can use.
 
 Decision: Tailscale's control server is the first real application driving the design, performance requirements, and API validation.
 
-Decision: the reusable library lives in the `reco` subdirectory as package
-`reco`; the first control-server application lives in `cmd/recontrol` as
-package `main`.
+Decision (2026-09-27): the module is `github.com/bradfitz/reco`, with package
+`reco` at the repository root and reusable operators in `nodes` (import
+`github.com/bradfitz/reco/nodes`). Reco stands for reactive computation.
+The control-server example remains in `cmd/recontrol` as package `main`;
+the educational demo remains in `cmd/webdemo`.
+
+Public-source application research lives under `notes/`. Private-source research
+and local session transcripts remain untracked and ignored, not publication
+material.
 
 Implication: the public API should not expose Tailscale-specific types, but it must be strong enough to model Tailscale's `MapResponse` workload without special cases in the library.
 
@@ -1247,7 +1254,7 @@ WithDelta enables external operators to construct immutable derived values.
 Decision: large map- and struct-shaped values should use persistent immutable data structures where that makes snapshots and diffs cheap.
 
 Decision: the prototype uses `github.com/benbjohnson/immutable.Map`, wrapped by
-Recontrol-owned snapshot and mutation APIs.
+Reco-owned snapshot and mutation APIs.
 
 Motivation:
 
@@ -1267,7 +1274,7 @@ Design direction:
 Open questions:
 
 - Whether upstream `github.com/benbjohnson/immutable` exposes enough internals to compute structural diffs cheaply.
-- Whether Recontrol needs a local fork or wrapper that tracks changed paths.
+- Whether Reco needs a local fork or wrapper that tracks changed paths.
 - Whether `MapResponse` should be represented as nested immutable maps internally.
 - How to balance typed Go APIs with a persistent map/tree internal representation.
 - Whether immutable snapshots are used only for collections or for all node values.
@@ -1553,7 +1560,8 @@ Open questions:
 
 Current implementation status as of 2026-09-27:
 
-- A minimal Go module exists, with the library in `reco` as package `reco`.
+- The module is `github.com/bradfitz/reco`, with package `reco` at the repository
+  root and reusable operators in `github.com/bradfitz/reco/nodes`.
 - `cmd/recontrol` contains the start of an in-memory Tailscale control server.
 - `cmd/webdemo` serves an embedded live graph UI over HTTP/WebSocket.
 - `Result[T]`, `Node[T]`, `Dep[T]`, `Graph`, `Tx`, `Snapshot[T]`, `Event[T]`, and subscription option types exist.
@@ -1765,7 +1773,7 @@ Open questions:
 - Which fields need custom zero-value/empty-slice marshal support?
 - How should client `CapabilityVersion` select output behavior?
 - How should `PeersChangedPatch` be generated and selected?
-- How should `PacketFilters` and `DisplayMessages` patch semantics map to Recontrol map deltas?
+- How should `PacketFilters` and `DisplayMessages` patch semantics map to Reco map deltas?
 - How should non-peer `MapResponse` fields expose keyed/path mutations to the
   subscription watcher?
 - What benchmarks define acceptable sub-linear behavior?

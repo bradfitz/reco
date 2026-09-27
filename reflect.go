@@ -59,7 +59,7 @@ type compiledField struct {
 }
 
 type nodeHandle interface {
-	recontrolTypedNode() typedNode
+	recoTypedNode() typedNode
 }
 
 var compileCache sync.Map // map[compileKey]compiledShape
@@ -190,7 +190,7 @@ func extractNode(v reflect.Value) (typedNode, error) {
 	if !ok {
 		return typedNode{}, fmt.Errorf("binding must be Node[T], got %T", iv)
 	}
-	return h.recontrolTypedNode(), nil
+	return h.recoTypedNode(), nil
 }
 
 func makeDepValue(depType reflect.Type, val nodeValue) reflect.Value {

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"slices"
 
-	"recontrol/reco"
+	"github.com/bradfitz/reco"
 )
 
 func ExampleSetSnapshot_All() {

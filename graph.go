@@ -291,5 +291,5 @@ func nodeFromAny(n any) (typedNode, error) {
 	if !ok {
 		return typedNode{}, fmt.Errorf("reco: expected Node[T], got %T", n)
 	}
-	return h.recontrolTypedNode(), nil
+	return h.recoTypedNode(), nil
 }

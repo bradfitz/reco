@@ -1,6 +1,7 @@
 // Package reco provides typed, in-process reactive dataflow graphs.
-// Declare mutable leaves with Data, SetData, MapData, or StructData, and derived nodes with
-// Func. Register an output with Graph.Register to register its dependencies too.
+// Reco stands for reactive computation.
+// Declare mutable leaves with Data, SetData, MapData, or StructData, and derived
+// nodes with Func. Register an output with Graph.Register to register its dependencies too.
 // Graph.Update applies a transaction, recomputes affected nodes in dependency
 // order, and delivers subscription events after the graph has settled.
 // Node definitions can be reused across independent Graph instances.
@@ -11,8 +12,8 @@
 //
 // # Incremental operators
 //
-// Package [recontrol/reco/nodes] provides reusable incremental nodes, including
-// set union and set-to-map computation. Packages can implement their own
+// Package [github.com/bradfitz/reco/nodes] provides reusable incremental nodes,
+// including set union and set-to-map computation. Packages can implement their own
 // operators using Operator and Input.
 // Allocate incremental caches inside the operator's per-graph compute factory.
 // Consume collection changes with ChangesSince and publish one WithDelta batch

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"recontrol/reco"
+	"github.com/bradfitz/reco"
 	"tailscale.com/control/tsp"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"

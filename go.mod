@@ -1,4 +1,4 @@
-module recontrol
+module github.com/bradfitz/reco
 
 go 1.26.5
 

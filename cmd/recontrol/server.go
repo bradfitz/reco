@@ -16,8 +16,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bradfitz/reco"
 	"golang.org/x/net/http2"
-	"recontrol/reco"
 	"tailscale.com/control/controlhttp/controlhttpserver"
 	"tailscale.com/net/netaddr"
 	"tailscale.com/net/tsaddr"

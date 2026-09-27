@@ -5,7 +5,7 @@ import (
 	"slices"
 	"testing"
 
-	"recontrol/reco"
+	"github.com/bradfitz/reco"
 )
 
 func TestSnapshotWithDelta(t *testing.T) {

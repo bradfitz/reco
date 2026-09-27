@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"recontrol/reco"
-	"recontrol/reco/nodes"
+	"github.com/bradfitz/reco"
+	"github.com/bradfitz/reco/nodes"
 )
 
 type namedNode interface {

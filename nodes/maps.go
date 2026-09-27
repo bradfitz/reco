@@ -1,6 +1,6 @@
 package nodes
 
-import "recontrol/reco"
+import "github.com/bradfitz/reco"
 
 // MapKeys contains every key in input. Value-only changes do not change the
 // output or notify its subscribers. V need not be comparable.

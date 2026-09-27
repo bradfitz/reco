@@ -1,6 +1,6 @@
 package main
 
-import "recontrol/reco"
+import "github.com/bradfitz/reco"
 
 // sumMap is a demo-local incremental reduction. project must be pure. State
 // belongs to each graph; only changed entries contribute to an update's work.

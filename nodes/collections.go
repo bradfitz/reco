@@ -1,6 +1,6 @@
 package nodes
 
-import "recontrol/reco"
+import "github.com/bradfitz/reco"
 
 // Union creates the union of two or more sets. A key remains present while any
 // input contains it. Repeated inputs have the same effect as a single input.

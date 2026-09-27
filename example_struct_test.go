@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"slices"
 
-	"recontrol/reco"
-	"recontrol/reco/nodes"
+	"github.com/bradfitz/reco"
+	"github.com/bradfitz/reco/nodes"
 )
 
 func ExampleStructSnapshot_WithDelta() {

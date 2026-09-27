@@ -40,7 +40,7 @@ func (n Node[T]) Valid() bool {
 	return n.def != nil
 }
 
-func (n Node[T]) recontrolTypedNode() typedNode {
+func (n Node[T]) recoTypedNode() typedNode {
 	if n.def == nil {
 		panic("reco: zero node handle")
 	}

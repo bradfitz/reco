@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"recontrol/reco"
+	"github.com/bradfitz/reco"
 )
 
 func TestSumMapDeltaWork(t *testing.T) {

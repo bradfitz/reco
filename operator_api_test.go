@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"recontrol/reco"
+	"github.com/bradfitz/reco"
 )
 
 func TestOperatorFactoryAndReadiness(t *testing.T) {

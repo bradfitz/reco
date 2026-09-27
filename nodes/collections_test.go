@@ -4,8 +4,8 @@ import (
 	"math/rand/v2"
 	"testing"
 
-	"recontrol/reco"
-	"recontrol/reco/nodes"
+	"github.com/bradfitz/reco"
+	"github.com/bradfitz/reco/nodes"
 )
 
 func mustRead[T any](t *testing.T, g *reco.Graph, n reco.Node[T]) T {

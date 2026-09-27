@@ -3,8 +3,8 @@ package reco_test
 import (
 	"testing"
 
-	"recontrol/reco"
-	"recontrol/reco/nodes"
+	"github.com/bradfitz/reco"
+	"github.com/bradfitz/reco/nodes"
 )
 
 var standardNodes = reco.OperatorTestFuncs{
