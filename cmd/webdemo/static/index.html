@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>reco · live graph playground</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header>
+    <a class="brand" href="/">reco<span class="brand-dot">●</span></a>
+    <span class="header-label">THE LIVE GRAPH PLAYGROUND</span>
+    <div class="connection"><span id="status" role="status" data-state="offline">Connecting…</span><button id="connection-toggle" type="button">Disconnect</button></div>
+  </header>
+  <main>
+    <section class="intro">
+      <div><p class="eyebrow">EDIT A LEAF. WATCH THE GRAPH.</p><h1>Small changes.<br><span>Connected consequences.</span></h1>
+        <p class="lede">Two sets of words, a few pure functions, and a shared graph.<br>Change an input. The server computes; your browser watches.</p>
+      </div>
+      <aside class="experiment"><span class="eyebrow">TRY THIS FIRST</span><p>Remove <code>cedar</code> from set A.<br>It stays in the union because B still contains it.</p><p class="muted">Open a second tab to watch the same graph together.</p><button id="reset" class="quiet" type="button" data-edit disabled>↺ Reset example</button></aside>
+    </section>
+    <div class="toolbar"><span><span class="live-dot"></span> One process <span class="divider">/</span> One shared graph <span class="divider">/</span> In memory</span><span id="revision">Waiting for a snapshot</span></div>
+    <section class="tx-bar" aria-label="Transaction controls">
+      <div class="tx-buttons"><button id="tx-start" type="button" disabled>Start Tx</button><button id="tx-rollback" type="button" disabled>Rollback Tx</button><button id="tx-commit" type="button" disabled>Commit Tx</button></div>
+      <p id="tx-status" role="status">Auto-commit: each edit is one transaction.</p>
+      <ol id="tx-edits" aria-label="Staged edits" hidden></ol>
+    </section>
+    <p id="error" role="alert" hidden></p>
+    <p id="stale" class="stale" hidden>Disconnected. These are cached browser values, not live state. Reconnect to replace them with a fresh snapshot. Edits are disabled and never queued for replay.</p>
+    <div class="board" id="board">
+      <svg id="edges" aria-hidden="true"></svg>
+      <section class="column"><h2><span>01</span> Mutable leaves <small>YOU EDIT</small></h2>
+        <article class="node" id="node-a"><div class="node-heading"><h3>Set A</h3><span class="type">Set&lt;string&gt;</span></div>
+          <p class="formula">a</p><div class="members" id="value-a"></div>
+          <form data-add="a" class="add-form"><input name="item" aria-label="New word for set A" placeholder="Add a word…" required maxlength="48" data-edit disabled><button type="submit" data-edit disabled>Add</button></form>
+          <div class="set-actions"><button type="button" data-clear="a" data-edit disabled>Clear</button><button type="button" data-replace="a" data-edit disabled>Replace with {fern, moss}</button></div>
+          <footer><span>DATA NODE</span><span data-version="a">—</span></footer>
+        </article>
+        <article class="node" id="node-b"><div class="node-heading"><h3>Set B</h3><span class="type">Set&lt;string&gt;</span></div>
+          <p class="formula">b</p><div class="members" id="value-b"></div>
+          <form data-add="b" class="add-form"><input name="item" aria-label="New word for set B" placeholder="Add a word…" required maxlength="48" data-edit disabled><button type="submit" data-edit disabled>Add</button></form>
+          <div class="set-actions"><button type="button" data-clear="b" data-edit disabled>Clear</button><button type="button" data-replace="b" data-edit disabled>Replace with {fern, moss}</button></div>
+          <footer><span>DATA NODE</span><span data-version="b">—</span></footer>
+        </article>
+        <article class="node scalar-input" id="node-weight"><div class="node-heading"><h3>Points per rune</h3><span class="type">int</span></div><form id="weight-form" class="add-form"><input id="weight" aria-label="Points per rune" type="number" min="0" max="100" step="1" required data-edit disabled><button type="submit" data-edit disabled>Apply</button></form><footer><span>weight · DATA</span><span data-version="weight">—</span></footer></article>
+        <article class="node scalar-input" id="node-label"><div class="node-heading"><h3>Garden name</h3><span class="type">string</span></div><form id="label-form" class="add-form"><input id="label" aria-label="Garden name" maxlength="80" data-edit disabled><button type="submit" data-edit disabled>Apply</button></form><footer><span>label · DATA</span><span data-version="label">—</span></footer></article>
+      </section>
+      <section class="column"><h2><span>02</span> Collection functions <small>SERVER COMPUTES</small></h2>
+        <article class="node computed" id="node-union"><div class="node-heading"><h3>Unique words</h3><span class="type">Set&lt;string&gt;</span></div><p class="formula">union = nodes.Union(a, b)</p><div class="members" id="value-union"></div><p class="hint">One member, even if both inputs contain it. Only the last removal propagates.</p><footer><span>DEPENDS ON a, b</span><span data-version="union">—</span></footer></article>
+        <article class="node computed" id="node-details"><div class="node-heading"><h3>A value for every key</h3><span class="type">Map&lt;string, Word&gt;</span></div><p class="formula">details = nodes.MapSet(union, wordInfo)</p><div class="table-wrap"><table><thead><tr><th>Key</th><th>Uppercase</th><th title="Unicode code points, not bytes">Runes</th></tr></thead><tbody id="value-details"></tbody></table></div><p class="hint">F(k) → {uppercase, rune count}. Keys stay the same; an added word computes just its own value. Its rune count contributes to the total and score.</p><footer><span>DEPENDS ON union</span><span data-version="details">—</span></footer></article>
+        <aside class="note"><span class="eyebrow">ONE TRANSACTION, ONE VISIBLE RESULT</span><p>A replace clears and adds atomically. You never see the empty state in between. The browser applies every changed node in a batch before rendering.</p></aside>
+      </section>
+      <section class="column"><h2><span>03</span> Derived outputs <small>READ ONLY</small></h2>
+        <article class="node computed metric" id="node-totalRunes"><div class="node-heading"><h3>Total runes</h3><span class="type">int</span></div><p class="formula">totalRunes = Sum(details.runes)</p><div class="number" id="value-totalRunes">—</div><p class="hint">Sum of rune counts across unique words. Updates add new counts and subtract old ones, without rescanning the map.</p><footer><span>DEPENDS ON details</span><span data-version="totalRunes">—</span></footer></article>
+        <article class="node computed metric" id="node-score"><div class="node-heading"><h3>Garden points</h3><span class="type">int</span></div><p class="formula">score = totalRunes × weight</p><div class="number" id="value-score">—</div><footer><span>DEPENDS ON totalRunes, weight</span><span data-version="score">—</span></footer></article>
+        <article class="node computed result" id="node-summary"><div class="node-heading"><h3>The final value</h3><span class="type">string</span></div><p class="formula">summary = Format(label, totalRunes, score)</p><p id="value-summary">Waiting for the graph…</p><footer><span>DEPENDS ON label, totalRunes, score</span><span data-version="summary">—</span></footer></article>
+        <aside class="note"><span class="eyebrow">WATCH IT RECOVER</span><p>Disconnect this tab, edit in another, then reconnect. A new snapshot brings every value up to date. Restarting the server resets the graph; there is no persistence yet.</p></aside>
+      </section>
+    </div>
+    <section class="activity"><div class="activity-heading"><h2>On the wire <span>LIVE WEBSOCKET ACTIVITY</span></h2><button id="clear-log" type="button" class="quiet">Clear log</button></div><ol id="activity-log" aria-label="Recent WebSocket activity"></ol><details><summary>Inspect the last graph message</summary><pre id="wire-message">No messages yet.</pre></details></section>
+    <footer class="page-footer"><span>reco / an observable little world</span><span>Experimental UI protocol · no peers, Locators, or durable storage</span></footer>
+  </main>
+</body>
+</html>
