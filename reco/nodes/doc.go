@@ -9,4 +9,7 @@
 // Definitions can be reused across independent graphs; incremental caches are
 // graph-local. These nodes use only public reco APIs, the same APIs available
 // to other packages implementing their own nodes. See [recontrol/reco.Operator].
+//
+// Struct assembles typed record fields from input nodes, retaining efficient
+// collection equality and changes for reco.SubscribeStruct.
 package nodes

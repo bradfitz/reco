@@ -26,6 +26,8 @@ func TestNodeClassNameConstructors(t *testing.T) {
 		{"Data", func(n reco.NodeClassName) namedNode { return reco.Data[int](n) }},
 		{"SetData", func(n reco.NodeClassName) namedNode { return reco.SetData[int](n) }},
 		{"MapData", func(n reco.NodeClassName) namedNode { return reco.MapData[int, int](n) }},
+		{"StructData", func(n reco.NodeClassName) namedNode { return reco.StructData[struct{ Value int }](n) }},
+		{"Struct", func(n reco.NodeClassName) namedNode { return nodes.Struct[struct{}](n, struct{}{}) }},
 		{"Func", func(n reco.NodeClassName) namedNode {
 			return reco.Func(n, struct{}{}, func(reco.Eval, struct{}) reco.Result[int] { return reco.OK(1) })
 		}},

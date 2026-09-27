@@ -18,6 +18,10 @@ func TestCollectionDeltaWork(t *testing.T) {
 	reco.CheckCollectionDeltaWork(t, standardNodes)
 }
 
+func TestStructNodeDeltaWork(t *testing.T) {
+	reco.CheckStructNodeWork(t, nodes.Struct[reco.StructWorkRecord])
+}
+
 func TestCollectionStructuralSharing(t *testing.T) {
 	reco.CheckCollectionStructuralSharing(t, standardNodes)
 }

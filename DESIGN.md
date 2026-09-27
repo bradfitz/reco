@@ -59,6 +59,8 @@ Implementation TODOs (webdemo/local primitives now in scope; remote work deferre
 - [x] Implement incremental union with overlap tracking across input sets.
 - [x] Add incremental intersection, XOR, difference, map-key sets, and distinct
   comparable map-value sets in `reco/nodes`.
+- [x] Add typed struct snapshots/deltas, nested set/map changes, composable
+  change batches, atomic struct snapshot/watch, and `nodes.Struct` assembly.
 - [x] Implement incremental set-to-map evaluation: add `k -> F(k)` for new
   members and remove the same key for deleted members.
 - [ ] Test overlapping union membership, atomic replacements, remove-plus-add
@@ -93,6 +95,158 @@ not merged. Independent graphs can reuse both names and definitions.
 This names the definition side of future class-plus-instance-key addressing;
 it does not implement keyed instances or decide distributed namespacing,
 function versioning, or the remote addressing format.
+
+### Discussion: Live MapResponseMeta And Per-Stream Encoding
+
+User's proposed application model (2026-09-27): maintain each recipient's final
+MapResponseMeta (MRM) as live immutable graph state. A subscriber translates
+its changes into the initial Tailscale MapResponse and subsequent wire deltas.
+See `map-protocol.md` for the protocol report. This is a requirements exercise
+for generic reco primitives, not a decision to resume control-server coding.
+
+The single-process model now has StructSnapshot, nodes.Struct, SubscribeStruct,
+and StructChanges.Then, in addition to Operator/Func, persistent snapshots,
+ValueEqualer, and fixed-point events. Stream lifecycle and protocol adapter code
+remain application-owned. MRM should hold materialized semantic
+state, not a tailcfg.MapResponse whose omitted fields mean "retain old state".
+Peers naturally form a map keyed by numeric NodeID; filters and display messages
+are named maps. Initial encoding may enumerate/sort; steady-state encoding
+should inspect only changed fields/entries and sort only changed peer IDs.
+
+Progress and remaining follow-up work:
+
+- [x] Add atomic initial snapshot/watch for typed records, including MRM, with
+  SubscribeStruct. Callbacks can queue changes during initial encoding; the
+  returned Snapshot.Valid reports whether an initial value exists.
+- [ ] Generalize snapshot/watch beyond maps/structs; expose Result status and
+  define application readiness separately from initialization.
+- [x] Add typed composite snapshots that honor field equality hooks and expose
+  field-aware changes without requiring map[string]any or a recursive JSON patch.
+- [ ] Provide composable set/map deltas and bounded per-subscriber accumulation.
+  Preserve the first Before and latest After per touched key, explicit presence,
+  reset/clear semantics, and atomic cross-field batches. ChangesSince only has
+  a fast path for identical roots or an adjacent retained delta base; discarding
+  intervening changes can force O(N) reconciliation. Coalesce changes, not just
+  latest snapshot pointers. An asynchronous executor will need this too.
+  - [x] StructChanges.Then composes scalar and nested map/set net changes using
+    persistent touched-key storage. It validates endpoint roots/versions.
+  - [ ] Automatic bounded queues, compact clear markers, and async scheduling
+    remain deferred; ChangeCount helps callers bound pending entry counts.
+- [ ] Define safe slow-subscriber behavior and separate pending from in-flight
+  changes. Current callbacks hold the graph lock, so encoding, compression, and
+  network writes belong outside callbacks. Bounded queues must either preserve
+  the transition or explicitly resync/terminate, never silently drop deltas.
+- [ ] Expose Result error/partial status to watchers. Snapshot/Event currently
+  expose value/version/validity, not that status; a local fixed point does not
+  imply a complete, safe initial configuration. Application readiness may impose
+  further requirements such as a self node and initialized policy inputs.
+- [ ] Add incremental map restriction by a key set, entry-value mapping,
+  lookups, and indexed joins where justified. Proposed names such as RestrictMap
+  and MapEntries are placeholders. MapSet only computes F(k) on additions and
+  cannot react to an existing peer's changing record. These operators can start
+  as external implementations using Operator/Input/ChangesSince/WithDelta.
+- [ ] Design keyed instances, dynamic per-key dependency tracking, indexes, and
+  instance lifetime management. Whole-map dependencies currently dirty every
+  consumer of that map; a helper that filters its delta does not itself make
+  graph invalidation key-selective. Keep this separate from the first local
+  MRM-to-stream adapter and from future Locator/peer transport APIs.
+- [ ] Test end-to-end steady-state work, not just final delta sizes: nested
+  equality, existing-peer edits with unchanged visibility, coalesced batches,
+  mutation during initial encoding, slow writers, and first-ready state.
+  - [x] Struct tests count hashes/equality work, exact node computations, and
+    actual storage sharing at up to 100,000 entries; cover coalesced changes,
+    atomic snapshot/watch races, initial encoding overlap, and uninitialized inputs.
+  - [ ] Real protocol encoder/client compatibility and transport backpressure
+    integration tests await the control-server implementation.
+
+Protocol-specific responsibilities remain outside reco: explicit omitted vs
+empty/null/false encoding, client capabilities, peer patch eligibility and
+client quirks, sorted peer lists, framing/compression, and per-stream baseline.
+Some transitions cannot be represented by an ordinary in-stream field update
+(for example clearing Domain); the adapter needs an explicit fallback policy.
+UserProfiles has upserts but no wire deletion. Peer removals require IDs, not
+an empty Peers slice. Reco's generic clear marker does not imply a compact wire
+clear exists for every protocol field. Test encoders against the client state
+accumulator, including its normalization and peer patch conversion behavior.
+
+The examined client starts a fresh map session on each poll, so reconnect must
+send an initial snapshot, not resume from reco's graph-local Version. Keepalive,
+ping/debug/browser commands, and similar events need stream/event handling;
+equal-value suppression and state coalescing are not event-delivery guarantees.
+
+Efficiency target: work proportional to changed data and affected recipients,
+plus persistent-storage paths and protocol-required changed-entry sorting.
+All-to-all visibility inherently entails N deliveries per peer update; with N
+updating peers the output traffic can be quadratic. Avoid additional scans of
+all peers per recipient and unnecessary invalidation of unaffected recipients.
+
+### Typed Struct Values And Deltas
+
+Implemented (2026-09-27): StructSnapshot[T] uses a normal Go struct as a fixed,
+typed schema. All fields must be exported and non-embedded. NewStruct(value)
+wraps a record without enumerating its collection contents; Value returns a
+typed shallow copy. Referenced objects remain immutable by caller contract.
+Zero snapshots contain T's zero value. There is no dynamic field creation or
+deletion, and no public string/any setter.
+
+Field[T, V]("FieldName") validates and caches a typed field handle at declaration
+time. Names must exist and types match V exactly. Field.Get reads a value;
+Field.Set and Field.Update create edits for StructDelta[T], an ordered batch.
+StructSnapshot.WithDelta applies the batch atomically, with later edits seeing
+earlier values. StructData and ApplyStructDelta integrate record mutations with
+Tx; repeated helper calls retain the original transaction base. Net-zero edits
+reuse old roots and suppress downstream computation/notifications.
+
+StructChanges[T] describes the net changes between snapshots. Its Fields
+iterator yields changed names in schema order; a typed field's Change returns
+before/after values plus an explicit changed flag, preserving nil/zero/false.
+MapFieldChanges and SetFieldChanges return typed per-entry mutations for direct
+map/set fields, not merely "Peers changed". Clear/replacement inputs currently
+normalize to point changes; clear can enumerate removed entries. Other field
+types, including interface fields and nested record fields, use whole-value
+replacement. Map-entry values are also replaced whole, not recursively patched.
+
+Equality respects each field's ValueEqualer hook, so unchanged collections
+compare root identities. Record overhead is a fixed-width copy/field walk;
+scalar comparisons still have their own equality costs. Reflected schema
+metadata is cached, but field access/assembly still uses reflection. Generated
+field helpers remain a possible ergonomic/performance refinement.
+
+ChangesSince uses retained record metadata or per-field differences. Collection
+inputs with matching roots or adjacent delta bases avoid full scans. Arbitrary
+replacements/skipped bases may need enumeration. Stream consumers should capture
+each event and compose with StructChanges.Then rather than retaining only the
+latest snapshot. Then validates endpoint root identity and observed version,
+preserves the first Before/latest After, and stores pending map/set mutations in
+persistent HAMTs. It visits incoming changed entries, not accumulated map contents.
+Cancelled entries are removed; earlier published batches remain immutable. Only
+endpoint snapshots and net changes are retained, not a linked event history.
+ChangeCount counts pending scalar replacements/collection entries in O(fields),
+useful for caller-enforced limits but not an exact byte/memory bound.
+
+SubscribeStruct atomically returns an initial snapshot and installs callbacks
+for settled StructEvents. Callbacks may start before setup returns and execute
+under the graph lock; prepare queues/accumulators first and encode/write outside
+callbacks. An invalid initial snapshot means use the first event as initial
+state, even if its net changes are empty. Callers own queue limits, in-flight
+batch separation, synchronization, and slow-writer resync/disconnect policy.
+Result error/partial metadata is not yet exposed by Snapshot/StructEvent.
+
+nodes.Struct[T](className, inputBindings) binds each record field to a Node of
+the corresponding type. The binding struct must match field names/order/types
+exactly. It assembles the record at a transaction fixed point without copying
+collection contents; it runs only after all inputs initialize. Like an inline
+Func, it assembles values rather than propagating input error/partial metadata;
+application-specific readiness policies can use Operator. Core owns record
+values/deltas/watch; nodes owns the convenience assembly operator.
+
+Runnable godoc examples demonstrate atomic record editing and an MRM-like
+initial-snapshot/stream-delta boundary. Tests cover field validation, explicit
+nil/zero values, repeated/atomic/rolled-back edits, exact net changes, random
+coalesced updates, stale/gapped batches, graph isolation, and snapshot/watch races.
+Work-count and structural-sharing tests use up to 100,000 map/set members and
+verify no collection work for scalar edits. BenchmarkStructDelta varies total
+collection size (1,000/100,000) and delta size (1/16).
 
 ### Single-Process Webdemo
 
@@ -677,6 +831,9 @@ Current local subscription behavior:
 - `SubscribeMap` atomically obtains the initial snapshot and installs a map
   change callback. `MapEvent` includes previous/current map snapshots, normalized
   keyed changes, and the graph-local version.
+- `SubscribeStruct` provides the same atomic setup for typed records and emits
+  StructChanges with field replacements and nested map/set mutations. Its
+  immutable Then operation supports caller-managed stream coalescing.
 - Callbacks run synchronously after propagation, while the graph is locked.
   They must not re-enter the graph or block on network I/O. Unsubscribe is
   synchronous and idempotent when called outside a callback.
@@ -1432,6 +1589,10 @@ Current implementation status as of 2026-09-27:
 - Set/map snapshots have public `WithDelta` and `ChangesSince` methods. Custom
   immutable values can implement the optional equality/version interfaces.
 - Set/map snapshots support both callback Range and native Go All iterators.
+- StructSnapshot/StructDelta provide typed records with field-aware equality,
+  atomic mutations, nested collection changes, and efficient StructChanges.Then
+  composition. nodes.Struct assembles field inputs; SubscribeStruct supplies
+  initial-snapshot-plus-watch. Stream encoders can consume only changed entries.
 - The webdemo supports atomic transaction staging/commit/rollback, dependency
   highlighting, and a details -> totalRunes -> score -> summary pipeline. Rune
   totals are maintained by a demo-local incremental map reduction, not a public
@@ -1628,7 +1789,7 @@ These decisions are good enough for prototyping but may need revision:
 - Canonical JSON as the universal identity mechanism.
 - JSON as the only serialization requirement.
 - Function values are not durably persisted.
-- Maps and sets are the only incremental collections in scope.
+- Maps, sets, and typed fixed-field records are the current incremental primitives.
 - No nested patch language in v1.
 - Exact division between deterministic in-process and multi-process transport tests.
 - Fallback computation is allowed when cached inputs are available. This is now deprioritized and may be removed from the first prototype.

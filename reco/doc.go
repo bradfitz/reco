@@ -1,5 +1,5 @@
 // Package reco provides typed, in-process reactive dataflow graphs.
-// Declare mutable leaves with Data, SetData, or MapData, and derived nodes with
+// Declare mutable leaves with Data, SetData, MapData, or StructData, and derived nodes with
 // Func. Register an output with Graph.Register to register its dependencies too.
 // Graph.Update applies a transaction, recomputes affected nodes in dependency
 // order, and delivers subscription events after the graph has settled.
@@ -21,4 +21,14 @@
 // Published values must be immutable. SetSnapshot and MapSnapshot provide
 // structurally shared storage, native Go iterators, and atomic delta application.
 // Custom immutable types may implement ValueEqualer and VersionedValue.
+//
+// # Typed records
+//
+// StructSnapshot[T] uses an ordinary Go struct as a fixed, typed schema. Field
+// handles provide typed edits and change inspection. SubscribeStruct atomically
+// obtains an initial snapshot and watches settled field/collection changes.
+// StructChanges.Then coalesces contiguous events without scanning unchanged
+// collection contents. Use MapFieldChanges and SetFieldChanges on the composed
+// batch rather than comparing its endpoint collections. See the SubscribeStruct
+// example for an incremental stream-encoding boundary.
 package reco
