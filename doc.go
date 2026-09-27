@@ -1,7 +1,18 @@
-// Package reco provides typed, in-process reactive dataflow graphs.
-// Reco stands for reactive computation.
+// Package reco is an experimental research prototype for reactive computation.
+//
+// # EXPERIMENTAL: DO NOT USE
+//
+// Nothing to see here; move along. This is unfinished research, not a supported
+// library. Do not depend on it. APIs and behavior may change or disappear without
+// notice. There are no compatibility or correctness guarantees.
+//
+// # Overview
+//
+// Reco stands for reactive computation. It provides typed, in-process
+// reactive dataflow graphs.
 // Declare mutable leaves with Data, SetData, MapData, or StructData, and derived
-// nodes with Func. Register an output with Graph.Register to register its dependencies too.
+// nodes with Func. Register an output with Graph.Register to register its
+// dependencies too.
 // Graph.Update applies a transaction, recomputes affected nodes in dependency
 // order, and delivers subscription events after the graph has settled.
 // Node definitions can be reused across independent Graph instances.

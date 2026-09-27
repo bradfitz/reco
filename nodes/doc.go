@@ -1,4 +1,13 @@
 // Package nodes provides reusable incremental node definitions for reco graphs.
+//
+// # EXPERIMENTAL: DO NOT USE
+//
+// This package is part of an unfinished research prototype, not a supported
+// library. Do not depend on it. APIs and behavior may change or disappear without
+// notice. There are no compatibility or correctness guarantees.
+//
+// # Overview
+//
 // Union, Intersection, Xor, and Difference implement set algebra. MapSet
 // preserves set keys while computing a value for each added member. MapKeys
 // and MapValues project a map into a set of keys or distinct comparable values.
