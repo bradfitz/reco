@@ -1,9 +1,240 @@
 # Recontrol Design
 
 Status: living design document  
-Last updated: 2026-07-26
+Last updated: 2026-09-27
 
 This document is the working source of truth for the Recontrol prototype. It should be updated whenever the design, prototype scope, APIs, or unresolved questions change.
+
+Status convention: **implemented/current** describes the Go API today;
+**target/proposed/deferred** describes future distributed, durable, or scheduled
+behavior. Historical sketches are not additional supported APIs. The current
+prototype is synchronous and in-process, with no durability or remote instances.
+
+## Current Discussion: Core Primitives And Remote Watches
+
+Direction as of 2026-09-26: set aside the control-server application and focus
+on the generic library's primitive data types, mutation delta messages, and
+cross-machine subscription watching.
+
+The design-first discussion is now followed by a concrete implementation step:
+build `cmd/webdemo` as a single-process educational playground. Implement the
+local primitives it needs; peer transport and Locators remain deferred.
+The earlier exclusion of real networking from the first prototype describes
+the previous scope; remote watches are now a target for the next phase.
+Nonlocal data and function nodes are resolved through a Locator and watched
+over a bidirectional protocol. Exact Locator APIs, transport, and stream
+recovery semantics remain undecided; WebSocket is a candidate, not a decision.
+
+Discussion TODOs:
+
+- [ ] Agree on the primitive value types and each type's mutation operations.
+  - [x] Sets and maps support atomic clear-all, remove-items, add/put-items
+    batches, applied in that order, for both local and remote subscribers.
+  - [x] Include a built-in union of two or more sets.
+  - [x] Include a key-preserving set-to-map operator with `F: K -> V`.
+- [ ] Define snapshot and delta message semantics, including identity, versions,
+  ordering, and atomic mutation batches.
+- [ ] Define remote watch setup, initial state, updates, and unsubscribe.
+  - [x] Route generic node instance keys through a user-supplied Locator;
+    subscribe to remote data nodes and function outputs when nonlocal.
+  - [x] Shard the application by customer/TailnetID, including when instance
+    keys are tuples containing that partition identity.
+  - [ ] Define the Locator's local/remote result and generic transport contract.
+- [ ] Decide how reconnects, missing deltas, slow subscribers, and cached state
+  should behave.
+- [ ] Turn the agreed decisions into an implementation and test TODO list.
+
+Preserve the existing requirement that small mutations must not require scans
+or copies of entire collections. Checked discussion items record agreed semantics;
+the local Go APIs are implemented as described below. Remote APIs, wire encoding,
+and transport remain undecided.
+
+Implementation TODOs (webdemo/local primitives now in scope; remote work deferred):
+
+- [ ] Implement atomic set/map delta application and notification, including
+  clear-all and replacement, with matching local and remote semantics.
+  - [x] Local `SetDelta` and `ApplySetDelta`: clear/remove/add within one Tx.
+  - [x] Public snapshot `WithDelta` for set/map batches, including `MapDelta`.
+  - [ ] Transaction-level map batch helper and a compact clear marker on events.
+- [x] Implement incremental union with overlap tracking across input sets.
+- [x] Add incremental intersection, XOR, difference, map-key sets, and distinct
+  comparable map-value sets in `reco/nodes`.
+- [x] Implement incremental set-to-map evaluation: add `k -> F(k)` for new
+  members and remove the same key for deleted members.
+- [ ] Test overlapping union membership, atomic replacements, remove-plus-add
+  of the same key, and set-to-map additions, removals, and value recomputation.
+  - [x] Cover overlap, atomic batches, diamond dependencies, randomized edits,
+    snapshot replacement, rollback, and graph-local operator state.
+  - [ ] Per-key declared dependencies and value recomputation remain future work.
+- [ ] Implement generic keyed node resolution through the Locator for both
+  data and function nodes, separating definition identity from instance keys.
+- [ ] Implement bidirectional remote query/watch/unsubscribe and incremental
+  state application using the agreed atomic delta semantics.
+- [ ] Define and implement remote watch lifetime management, including shared
+  dependencies, cancellation, and transport cleanup.
+- [ ] Test multi-process resolution with tuple keys, remote data and function
+  watches, unsubscribe, and the agreed reconnect/resync behavior.
+
+### Node Class Names
+
+`reco.NodeClassName` is a defined string type naming a reusable node definition
+(a node class). All node constructors take it; `Node.ClassName()` returns it,
+replacing the former `Node.Key()` accessor. Collection keys and future generic instance keys are
+separate concepts and retain their own types.
+
+Class names are nonempty, exact, case-sensitive strings. There is no trimming,
+normalization, or special meaning for separators and punctuation, and no required
+namespace syntax. A zero node handle returns the empty class name.
+Names are unique among all definitions registered in a graph, including recursive
+dependencies, regardless of value type or constructor. Registering the same
+definition again is allowed; distinct definitions with equal names are rejected,
+not merged. Independent graphs can reuse both names and definitions.
+
+This names the definition side of future class-plus-instance-key addressing;
+it does not implement keyed instances or decide distributed namespacing,
+function versioning, or the remote addressing format.
+
+### Single-Process Webdemo
+
+`cmd/webdemo` is a teaching and experimentation surface for the library, not
+the control-server application. It embeds its HTML/CSS/JS and serves one shared
+in-memory graph to all connected browsers. No peer connections or Locators.
+
+Current graph:
+
+- Editable word sets `a` and `b` feed `Union(a, b)`.
+- `MapSet(union, F)` preserves each word key and computes uppercase/rune count.
+- A demo-local incremental operator sums the map entries' rune counts into
+  `totalRunes`. It subtracts old/removed counts and adds new counts from map
+  deltas, without scanning unchanged entries. Another function multiplies this
+  total by the editable points-per-rune weight; the final summary also depends
+  on an editable label. Rune counts are Unicode code points, not bytes. Replacing
+  words can change the score even when the number of unique words is unchanged.
+- Set add/remove/clear/replace and scalar edits commit through reco transactions.
+- A sparse dependency-ordered queue evaluates each dirty function at most once, then
+  subscriptions publish the fixed-point result. Operator caches belong to graph
+  instances, not reusable definitions. Rate limiting/debouncing is not built.
+
+The browser protocol is deliberately an implementation detail, not a commitment
+for the future peer protocol. Initial connection and reconnect receive a full
+snapshot. Subsequent messages batch changed-node scalar values and set/map
+touched-key deltas after each transaction. They do not resend whole collections.
+The browser applies the whole batch before rendering, highlights changed values,
+and exposes the last raw message plus a bounded activity log. Its rendering may
+rebuild the small changed collection's DOM; incremental DOM rendering is separate
+from incremental wire updates. Demo sets are limited to 64 words each.
+
+Snapshot registration is serialized with updates. Each connection has a bounded
+send queue; overflow disconnects it rather than dropping deltas. Reconnect uses
+a fresh snapshot, including after server restart. Browser edits are disabled
+while disconnected and are not replayed. Restart currently resets the graph;
+this demonstrates connection recovery, not durable or distributed recovery.
+
+Transaction UI: default mode auto-commits each edit. Start Tx stages an ordered
+batch locally and marks leaf previews as drafts; computed nodes continue showing
+committed state. Rollback Tx discards drafts. Commit Tx sends one bounded batch
+that runs inside a single `Graph.Update`; any invalid edit rolls back the entire
+batch. Other tabs only see the final settled delta batch. Commit applies the
+staged operations to the latest server state, not a long-lived isolated snapshot.
+No graph lock is held while a user edits. A rejected batch remains available to
+roll back; disconnect discards drafts and never replays an uncertain commit.
+
+Dependency names in each node footer are hoverable and keyboard-focusable.
+Highlight the referenced node and exactly its edge to the consumer. On narrow
+screens where edges are hidden, clicking a dependency scrolls to its source box.
+
+### Efficiency Regression Coverage
+
+- Data and generic function nodes suppress identical scalar writes; both typed
+  and inline function adapters compute once for relevant changed inputs and
+  stop propagation when their output is unchanged.
+- `SetData`, `MapData`, and all `reco/nodes` collection operators use immutable
+  HAMTs. Contributor counts also use `github.com/benbjohnson/immutable.Map`. Point
+  updates copy paths, not whole backing stores. Transaction deltas normalize
+  repeated touched keys, and net-zero batches reuse the previous root.
+- Tests count actual `F(k)` invocations and hash/equality operations for small
+  deltas in large collections. Separate white-box tests inspect HAMT branch
+  reuse, catching full rebuilds that produce correct values but copy O(N) data.
+- Graph propagation queues only affected consumers using precomputed topological
+  ranks; old values and notifications are tracked only for changed nodes. No
+  whole-registry copy or subscription scan on point updates.
+- Benchmarks vary collection sizes (1,000 / 100,000), delta sizes (1 / 16), and
+  unrelated graph sizes (10 / 1,000 / 100,000), reporting time and allocations.
+  Run `go test ./reco -run '^$' -bench 'Delta' -benchmem`.
+- The guarantee is touched-key work plus HAMT traversal and affected dependency
+  edges, not constant total work for every possible mutation. Initial snapshots,
+  arbitrary snapshot replacement, and clearing many memberships can require
+  enumeration. A general user-supplied `Func` is invoked minimally but its own
+  code remains responsible for incremental work inside that invocation.
+
+### User-Defined Incremental Operators
+
+Implemented (2026-09-27): callers can implement incremental operators in their
+own packages, without adding private cases to reco. The `reco/nodes` package
+provides Union, Intersection, Xor, Difference, MapSet, MapKeys, and MapValues,
+using the same exported APIs:
+
+- `Operator[T](className, []Dependency, func() Compute[T])` declares an operator.
+  Its factory creates independent mutable caches for each graph instance.
+  `Node[T]` implements `Dependency`; runtime node handles remain library-owned.
+- `Input(eval, node)` reads a declared dependency as `Dep[T]`, including version,
+  validity, error, and partial-result metadata. Heterogeneous inputs and
+  variable-length dependency lists are supported. Undeclared inputs panic.
+  The evaluation handle is named `Eval` to distinguish it from the standard
+  library's `context.Context`; it does not carry cancellation or deadlines.
+- Zero set/map snapshots are empty. `WithDelta` creates a new immutable snapshot
+  with a clear/remove/add-or-put batch. It copies only touched HAMT paths for
+  point edits, normalizes touched keys, and reuses the prior root for net-zero
+  edits. Custom values stored inside a snapshot must also be immutable.
+- `ChangesSince(previous)` uses persistent-root lineage to distinguish unchanged
+  inputs from new deltas. An adjacent delta costs O(delta), not O(collection).
+  Initial state, skipped snapshots, and arbitrary replacements may require O(N)
+  reconciliation; graph-local versions alone cannot establish lineage.
+- Build one output `WithDelta` batch per evaluation to preserve the fast path.
+  Chained output batches remain correct, but consumers such as `SubscribeMap`
+  may need reconciliation to include all changes since the previous output.
+  `Changes()` describes a snapshot's own last delta, not what any particular
+  consumer has missed; in particular, a no-op preserves that old metadata.
+- Custom immutable value types can implement `ValueEqualer` and `VersionedValue`
+  for fast equality and immutable graph-version stamping. Values without these
+  optional hooks use ordinary comparison and the outer `Snapshot.Version`.
+
+The runtime still owns scheduling, graph-local instances, dependency readiness,
+fixed-point propagation, and subscriptions. Operators compute only from declared
+inputs and must not perform external side effects, retain an Eval,
+re-enter their graph, or mutate published snapshots. Definitions are reusable
+across concurrent graphs, so mutable caches belong inside the factory. Resource
+and remote-watch lifecycles are not part of this API yet.
+
+External-package union/map implementations run the same conformance tests as the
+built-ins: computation counts, overlapping inputs, atomic batches, random edits,
+replacements, concurrent graph isolation, and actual HAMT structural sharing.
+The public Operator godoc includes a runnable external-package map example.
+
+Package boundary (2026-09-27): `reco` owns the graph runtime, extension API,
+primitive collection values/deltas, transactions, and subscriptions.
+`reco/nodes` provides supported reusable derived-node algorithms. It imports
+`reco`, never the reverse, and has no privileged runtime access. Union and
+MapSet live there without forwarding wrappers in `reco`, along with Intersection,
+Xor, Difference, MapKeys, and MapValues. Future reusable
+filtering, join, and sorted-view nodes belong there too;
+application-specific examples remain with their applications.
+
+Future webdemo TODOs (requested, not needed in this first version):
+
+- [ ] Independent server-side execution rate controls: let nodes be dirtied
+  repeatedly before recomputing, simulate load, and show coalescing/Nagle-like
+  scheduling. The present executor is synchronous per transaction.
+- [ ] Independent outbound delivery and client-side apply/render rate controls;
+  distinguish computation coalescing, wire coalescing, and rendering delay.
+- [ ] Visualize dirty/pending/computing/settled states and count input mutations
+  versus recomputations, emitted patches, and renders.
+- [ ] Rich per-message delta visualization and byte/key counts showing minimal
+  patches rather than full O(N) sets/maps. Preserve the existing touched-key
+  path and raw wire inspector when adding scheduling controls.
+- [ ] Coalesce collection patches by key while retaining ordering, base versions,
+  and atomic replacement semantics. Never silently discard unapplied deltas.
+- [ ] Multi-process operation and demonstrations of ownership/peer recovery later.
 
 ## Overview
 
@@ -19,7 +250,7 @@ The programming model is similar to a spreadsheet:
 - When data changes, affected computations are scheduled and recomputed.
 - Updates propagate through the dependency graph until the system reaches a fixed point.
 
-Unlike a local spreadsheet, Recontrol is designed for a distributed system where data and computation are partitioned across shards. The initial prototype should validate the semantics in a single-process, multi-shard simulation before adding real networking.
+Unlike a local spreadsheet, Recontrol is designed for a distributed system where data and computation are partitioned across machines by customer. Normal node resolution includes local and remote nodes. An in-process multi-shard simulation is useful for deterministic tests, but cross-machine watches are part of the current target.
 
 For the Tailscale use case, some `MapResponse` values may involve hundreds of thousands of nodes. The design must therefore avoid full recomputation and full diffing work that is linear or quadratic in the whole tailnet whenever only a small part of the input changes.
 
@@ -27,8 +258,8 @@ For the Tailscale use case, some `MapResponse` values may involve hundreds of th
 
 - Provide a Go library, not a standalone service.
 - Support generic key and value types.
-- Require all keys and values to be JSON-marshalable.
-- Use canonical JSON bytes for identity, equality, hashing, and comparison.
+- Target JSON-marshalable remote keys/values and canonical wire identity;
+  the local API does not currently require or validate JSON encoding.
 - Model computation as a directed acyclic graph.
 - Support local atomic transactions within one customer partition.
 - Support reactive recomputation after transactions commit.
@@ -48,20 +279,17 @@ For the Tailscale use case, some `MapResponse` values may involve hundreds of th
 - Support fixed-point notifications so complete values are emitted only after reactive propagation settles.
 - Coalesce or "Nagle" bursts of outbound deltas to avoid encoding redundant intermediate wire updates.
 
-## Non-Goals For The First Prototype
+## Non-Goals For The Current Phase
 
-- Real network transport.
 - Production distributed consensus.
 - Cross-customer atomic transactions.
 - Cross-shard atomic transactions.
-- Asking remote shards to perform computation for local nodes.
-- Cross-shard subscriptions as a primary execution mechanism.
 - Durable persistence of derived function values.
 - Recursive nested patch semantics for collection values.
 - A complete production scheduler.
 - Automatic load balancing across shards.
 
-The first prototype should prove the data model, graph semantics, transactions, subscriptions, executor shape, debouncing, durability boundary, local replicated-input behavior, and `MapResponse` delta behavior.
+The current phase focuses on core primitives, atomic mutation deltas, and local/remote subscriptions. The control-server application is on hold. Earlier plans excluding networking and remote function subscriptions are superseded.
 
 ## Architecture Summary
 
@@ -72,13 +300,19 @@ The system consists of:
 - Function nodes that hold pure computations over dependencies.
 - A dependency graph that must be a DAG.
 - An executor that schedules recomputation explicitly.
-- A subscription layer for local updates and, later, replicated cross-shard inputs if needed.
+- A subscription layer for local and remote data values and function outputs.
 - A persistence interface for committed data transactions.
-- A routing layer supplied by the user.
+- A user-supplied Locator mapping generic instance keys to local ownership or
+  a generic transport for reaching the remote owner.
 
 For the prototype, multiple shards can run in one process and communicate through Go interfaces. That keeps distributed semantics testable without committing to a transport.
 
-Current direction: for a given user/customer/tailnet, the owning shard should have all data needed to compute that user's outputs locally. If a node or tailnet is shared with another tailnet, the needed state should be replicated into the local shard. Earlier ideas about using shards as locators and asking a peer shard to compute a dependency are deferred because that model is likely too fragile for the initial design.
+Current direction: resolve each data or function instance using its key. A
+local instance is served locally; a nonlocal instance is subscribed to through
+the Locator-selected transport. Remote function outputs are computed by their
+owner. The runtime handles routing and watches, keeping network side effects
+out of pure computation functions. Cached remote dependencies can feed local
+computation; pre-replicating every input is not a prerequisite for resolution.
 
 ## Primary Use Case: Tailscale MapResponse
 
@@ -88,7 +322,9 @@ Decision: `MapResponse` is not a special library primitive. It should be impleme
 
 Decision: the Tailscale application may compute an internal map-shaped representation, roughly `map[string]any`, where each top-level `MapResponse` field is a map key for the initial full response shape.
 
-Decision: Recontrol should not compute Tailscale wire deltas as graph nodes. The subscription watcher for the `MapResponse` node should diff two full snapshots cheaply and encode the appropriate delta `MapResponse` on the wire.
+Decision: Recontrol should not compute Tailscale wire deltas as graph nodes.
+Incremental collection subscriptions should preserve the exact changed keys so
+the watcher can encode a wire delta without scanning or diffing full snapshots.
 
 Important protocol facts from `tailcfg.MapResponse`:
 
@@ -108,7 +344,8 @@ Implications for Recontrol:
 - The computed `MapResponse` node must know when it has reached its first fixed point so the server can serialize the initial complete response.
 - After the first complete response, the system should prefer protocol deltas over complete responses.
 - It is still desirable to invoke outbound callbacks only at fixed points, not for every intermediate recomputation.
-- If many complete internal `MapResponse` states are produced in a wave, the wire encoder should coalesce pending work before producing deltas.
+- If many collection mutations are produced in a wave, the wire encoder should
+  coalesce them by key before producing deltas.
 - The internal representation does not have to be exactly `tailcfg.MapResponse` if another representation makes incremental computation and diffing cheaper.
 - The final encoder must preserve `tailcfg.MapResponse` value semantics and client capability behavior.
 - The subscription API must expose enough snapshot/version identity to make old/new diffs cheap.
@@ -129,23 +366,31 @@ Decision: Recontrol should be a generic library that non-Tailscale applications 
 
 Decision: Tailscale's control server is the first real application driving the design, performance requirements, and API validation.
 
+Decision: the reusable library lives in the `reco` subdirectory as package
+`reco`; the first control-server application lives in `cmd/recontrol` as
+package `main`.
+
 Implication: the public API should not expose Tailscale-specific types, but it must be strong enough to model Tailscale's `MapResponse` workload without special cases in the library.
 
 ### Go And Types
 
 Decision: the library will use Go generics in the public API where useful.
 
-Decision: keys and values may be any Go type as long as they can be marshaled to JSON.
+Current API: scalar node values and map values may be any Go type, subject to
+published-value immutability. Collection keys and set elements must be Go
+`comparable`; `MapValues` also requires comparable map values. Interface-typed
+keys/values used as set members must be dynamically comparable. Node definitions
+are named by `NodeClassName`, not by a generic collection or instance key.
 
-Decision: Go comparability is not required. Types that are not comparable in Go can still be used because identity is based on canonical JSON bytes.
-
-Open detail: the exact canonical JSON implementation is not yet decided.
+Deferred target: JSON-marshalable remote keys/values and canonical identity could
+support non-comparable instance or collection keys. This is not implemented and
+does not relax today's Go type constraints. The encoder and compatibility with
+local equality semantics remain open.
 
 ### Canonical Identity
 
-All user keys and values are encoded into a canonical byte representation.
-
-Those bytes are used for:
+Deferred proposal, not current behavior: encode remotely addressed keys/values
+into a canonical byte representation. Possible uses include:
 
 - Equality.
 - Hashing.
@@ -155,11 +400,17 @@ Those bytes are used for:
 - Delta application.
 - Durable log identity.
 
-This is especially important for non-comparable Go values, map keys, and set elements.
+Current behavior: collection membership uses Go equality and HAMT hashing;
+scalar values use `ValueEqualer` when provided, otherwise `reflect.DeepEqual`.
+Map entry equality uses `ValueEqualer`, otherwise Go equality for comparable
+values and `reflect.DeepEqual` for non-comparable values. Class names use exact
+string equality. No canonical JSON encoding or validation occurs locally.
 
 ### Graph Model
 
-Decision: the unit of a graph is one customer/tailnet.
+Current API: a Graph is an independent runtime instance. The motivating control
+application plans to use one graph per partition; the generic API imposes no
+customer/tailnet semantics.
 
 Decision: one process may run many independent graphs, potentially up to millions.
 
@@ -185,9 +436,9 @@ Data nodes are mutable inputs.
 
 Decision: data node updates happen through transactions.
 
-Decision: data node committed state must be durable.
-
-Decision: reactive propagation starts only after the transaction commits durably.
+Deferred durability target: persist data node commits before propagation.
+Current `Graph.Update` commits in memory and propagates synchronously; it does
+not persist data or survive process restart.
 
 ### Function Nodes
 
@@ -223,54 +474,84 @@ Open detail: whether `Err` remains an `error`, becomes a structured JSON-marshal
 
 ### Function Versioning
 
-Decision: functions should have explicit identity that includes a name and version.
+Deferred target: remotely addressable function definitions should have explicit
+identity including a class name and version. Current constructors take only a
+`NodeClassName`; there is no function-version API.
 
 Potential identity:
 
 ```go
 type FunctionID struct {
-	Name    string
-	Version int
+	ClassName NodeClassName
+	Version   int
 }
 ```
 
 Decision: versions are independent. There is no implicit cache invalidation; new versions are distinct functions.
 
-Open question: whether function names are globally scoped, package scoped, graph scoped, or customer scoped.
+Current class names are unique within each graph, including dependencies.
+Open question: how distributed registration, namespaces, and function versions
+extend that local contract.
 
 ## Sharding Model
 
-The keyspace is partitioned by customer ID or an equivalent key prefix.
+The keyspace is partitioned by customer ID or an equivalent partition identity.
+In the Tailscale application this is `TailnetID`, the unit of sharding.
+
+Typical node instance keys are:
+
+- `TailnetID`.
+- `(TailnetID, NodeID)`.
+- `(TailnetID, UserID)`.
+
+These application keys always include the TailnetID, so instances belonging to
+one customer route together regardless of the rest of the key. The library
+must keep keys generic and must not bake in Tailscale types or tuple layouts.
 
 Each customer partition is owned by one shard at a time.
 
-Decision: shard ownership is determined by a user-supplied routing function.
-
-Possible API:
-
-```go
-type ShardID string
-
-type ShardMapper func(customerID string) ShardID
-```
+Decision: shard ownership and remote resolution use a user-supplied Locator
+interface. Conceptually it maps a node's generic instance key to local
+ownership or a generic network transport for speaking to the owning process.
+The exact Go signature is not yet decided; the earlier string-only
+`ShardMapper` sketch is insufficient for this contract.
 
 Requirements:
 
-- Deterministic.
-- Consistent across participants.
+- Consistent ownership decisions across participants for a given routing view.
 - Supplied by the user.
-- Used by the indirection/routing layer.
+- Used by normal resolution of both leaf data nodes and function nodes.
+- Supports generic keys containing the application's partition identity.
+- Does not require the library to know concrete network addresses or commit
+  to WebSocket as its transport.
+
+The partition key chooses the owner, not the node definition. Multiple data
+and function definitions may have instances with the same key. Remote node
+addressing therefore needs a portable definition identity (including version
+for functions) as well as the canonical instance key. Resolving a remote
+function means watching a known function instance on the owner, not shipping
+Go closures to another process.
 
 Decision: shards may differ in compute capability, but this is acceptable because load is expected to be proportional to the number of customers assigned to each shard.
 
 Open questions:
 
 - How shard membership is represented.
+- How the typed Locator obtains partition identity from each generic key type.
+- Whether the Locator returns an endpoint, a dialable transport, or an existing
+  session, and how local ownership is represented.
 - How routing changes are rolled out.
 - Whether the library owns shard discovery or receives a complete routing table from the host application.
 - What happens to in-flight subscriptions during customer migration.
 
 ## Transactions
+
+Current API: `Graph.Update(func(*Tx) error)` serializes updates with a graph
+mutex. Returning an error rolls back staged leaf mutations without recomputing
+or notifying. A successful update commits all staged mutations in memory,
+recomputes affected nodes to a fixed point, and delivers callbacks before
+returning. Mutation helpers compose against earlier staged writes in the same
+Tx. There is no public transactional read/CAS API or durable commit yet.
 
 Decision: a transaction may update multiple data cells atomically.
 
@@ -286,7 +567,7 @@ Transaction scope:
 Guarantees:
 
 - Atomic.
-- Durable before commit returns.
+- Durable before commit returns (deferred target, not current behavior).
 - Propagation begins after commit.
 
 Non-goals:
@@ -296,14 +577,16 @@ Non-goals:
 
 Open questions:
 
-- Exact transaction API.
+- How a durable backend integrates with the existing Graph.Update/Tx API.
 - Whether transactions support compare-and-set preconditions.
-- Whether transactions expose read-your-writes inside the transaction.
+- Whether to expose public read-your-writes reads inside the transaction.
 - Whether transaction commit returns updated versions for changed nodes.
 - Whether durability is append-log-only in the prototype.
-- Whether transaction serialization is enforced by a graph mutex, executor lane, or storage-level sequencing.
+- How the graph mutex evolves with executor lanes or storage-level sequencing.
 
 ## Durability
+
+Deferred: the following is a target design, not an implemented storage layer.
 
 Decision: committed data node updates must be durable.
 
@@ -324,6 +607,11 @@ Open questions:
 - Whether the durable log stores typed JSON, canonical bytes, or both.
 
 ## Consistency Model
+
+Current local behavior: transactions, recomputation, and callbacks are serialized
+per graph; callbacks observe the settled result and are not reordered. The
+out-of-order delivery and resynchronization requirements below concern future
+remote streams. Coalescing/rate control is not yet implemented in the executor.
 
 Decision: consistency is strong only within a local shard transaction.
 
@@ -363,7 +651,7 @@ Decision: every subscription returns a handle that can unsubscribe.
 
 Decision: the current preferred subscription shape exposes old and new immutable snapshots in the event so the caller can compute application-specific diffs cheaply.
 
-Possible API:
+Current public types:
 
 ```go
 type SubscriptionHandle interface {
@@ -378,11 +666,26 @@ type SubscribeOptions struct {
 type Event[T any] struct {
 	Previous Snapshot[T]
 	Current  Snapshot[T]
-	Version  uint64
+	Version  Version
 }
 ```
 
-Subscription behavior:
+Current local subscription behavior:
+
+- `Subscribe` installs a callback for subsequent changes; it does not emit an
+  initial snapshot. `Read` gets the current `Snapshot[T]` separately.
+- `SubscribeMap` atomically obtains the initial snapshot and installs a map
+  change callback. `MapEvent` includes previous/current map snapshots, normalized
+  keyed changes, and the graph-local version.
+- Callbacks run synchronously after propagation, while the graph is locked.
+  They must not re-enter the graph or block on network I/O. Unsubscribe is
+  synchronous and idempotent when called outside a callback.
+- Both option fields exist, but delivery is currently fixed-point-per-transaction
+  regardless of options; there is no executor-level coalescing.
+- `Snapshot[T]` exposes Value, Version, and Valid. Result error/partial metadata
+  is available to computations through `Dep[T]`, not in Snapshot/Event today.
+
+Target remote subscription behavior:
 
 - Updates may arrive out of order.
 - Subscribers should receive enough metadata to order, discard, or resync.
@@ -393,19 +696,33 @@ Subscription behavior:
 
 Open questions:
 
-- Push callback API versus channel API.
-- Whether unsubscribe is synchronous.
-- Whether subscriptions are one-shot snapshot plus stream or stream-only.
-- Backpressure behavior when subscribers are slow.
-- Whether subscribers can request full snapshots explicitly.
-- Whether fixed-point-only callbacks are part of the subscription API or a separate output-drain API.
-- Exact shape of `Snapshot[T]` and whether scalar values use the same snapshot wrapper as collections.
+- Whether to add channel/pull delivery alongside the local callback API.
+- Remote unsubscribe acknowledgment and cleanup semantics.
+- An atomic snapshot-plus-watch API for scalar/set nodes, analogous to SubscribeMap.
+- Backpressure and explicit resnapshot behavior for remote subscribers.
+- How subscription options interact with an asynchronous executor.
+- How snapshot/events expose partial results, errors, and remote provenance.
 
 ## Cross-Shard Subscriptions And Caching
 
-Current status: this section is retained as background, but it is not part of the first prototype direction.
+Current direction: cross-machine subscriptions are a core mechanism for
+resolving nonlocal dependencies, including computed function outputs. This
+supersedes the earlier replicated-input-only prototype direction.
 
-Decision update: the first prototype should not depend on cross-shard remote computation. A user's owning shard should have all data needed to compute that user's values locally. Shared nodes or tailnets should be replicated into the local shard before they are needed for computation.
+Decision: instances speak a bidirectional query/stream-changes protocol through
+the Locator-selected transport. Subscribe and unsubscribe remote data/function
+instances as they are needed and released. WebSocket is a possible transport;
+the library contract remains generic.
+
+Remote collection updates use the same atomic delta semantics as local
+updates. A received clear/remove/add-or-put batch must not expose intermediate
+states. This does not imply a distributed transaction or global fixed point.
+
+Proposed implementation approach, not yet a settled API: share one upstream
+watch when multiple local consumers need the same remote node, retain it while
+needed, and unsubscribe when the final consumer releases it. Multiplexing
+multiple node watches over a peer session should be considered separately
+from node watch identity and lifetime.
 
 Decision: when one shard depends on another shard's value, the subscribing shard caches the results it receives.
 
@@ -413,11 +730,11 @@ Purpose:
 
 - Restart recovery.
 - Continued operation when a peer shard is down.
-- Local fallback computation when possible.
+- Potential local fallback computation when possible (still deferred).
 
 Decision: explicit cache invalidation should not be necessary for pure function results. Input changes drive recomputation; function identity includes version.
 
-Result precedence:
+Previously proposed result precedence (fallback behavior remains deferred):
 
 1. Authoritative remote result.
 2. Cached remote result.
@@ -429,13 +746,18 @@ Open questions:
 - How staleness is exposed to callers.
 - Whether cached values have TTLs for observability, even if not for invalidation.
 - Whether fallback results can be published downstream or are marked local-only.
-- Whether any of this should remain in the design after the local-replication model is proven.
+- Snapshot-to-delta handoff, stream ordering, base versions, and resynchronizing
+  after lost deltas or reconnects.
+- Watch/session sharing, unsubscribe races, and slow-subscriber backpressure.
+- How ownership changes invalidate Locator results and move active watches.
+- How DAG validation and readiness/fixed-point reporting work across remote
+  dependency boundaries without implying cross-shard atomicity.
 
 ## Value Envelopes
 
 Values propagated through the system need metadata.
 
-Possible shape:
+Deferred remote/provenance sketch (not a public API):
 
 ```go
 type SourceKind int
@@ -449,7 +771,7 @@ const (
 type ValueEnvelope[T any] struct {
 	Value           T
 	Previous        T
-	FunctionName    string
+	ClassName       NodeClassName
 	FunctionVersion int
 	SourceKind      SourceKind
 	IsPartial       bool
@@ -462,12 +784,19 @@ Open questions:
 
 - Whether `Previous` belongs in every envelope or only subscription events.
 - Whether errors must be JSON-marshalable.
-- Whether `FunctionName` and `FunctionVersion` should be replaced by a general node ID.
+- How ClassName, FunctionVersion, and a generic instance key form a remote address.
 - Whether source/provenance metadata should be part of durable cache state.
 
 ## Incremental Collections
 
 Decision: maps and sets are first-class incremental collection values.
+
+Snapshot iteration (2026-09-27): keep the callback-based `Range` methods and
+also expose `SetSnapshot.All() iter.Seq[K]` and
+`MapSnapshot.All() iter.Seq2[K, V]` for native Go range loops. Iterators are lazy,
+reusable, stop immediately on early exit, and retain the snapshot on which they
+were created. They walk the immutable backing store without materializing a
+copy. Order is unspecified; zero/empty snapshots yield nothing.
 
 Reasoning: large collections often change by small deltas, and retransmitting the full collection on every update is too expensive.
 
@@ -482,106 +811,227 @@ map[K]bool
 
 Decision: the library must provide a first-class set type for string and integer keys, with upsert and delete operations.
 
-Initial required set shapes:
+Implemented set shapes include:
 
-- `Set[string]`
-- `Set[int]` or a defined integer key type where needed
+- `Node[SetSnapshot[string]]`, constructed by `SetData[string](className)`.
+- `Node[SetSnapshot[int]]`, or a defined comparable key type.
 
-The exact API can remain generic, but these concrete cases must be well-supported and efficient because they match common Tailscale IDs and indexes.
+The snapshot is an immutable value; its Node is the graph handle. Map data nodes
+similarly have type `Node[MapSnapshot[K, V]]`, constructed by
+`MapData[K, V](className)`. There are no public `Set[K]` or `Map[K, V]` types.
 
-### Map Updates
+### Atomic Collection Deltas
 
-Map-valued nodes may propagate:
+Decision (2026-09-26): sets and maps use the same ordered batch semantics for
+in-process and cross-machine change notifications. One delta atomically applies
+any combination of the following phases, in this order:
 
-- A full snapshot.
-- A versioned delta.
+1. Clear the entire collection, if requested.
+2. Remove the specified items or keys.
+3. Add the specified items, or put the specified whole key/value entries.
 
-Possible mutation type:
+Subscribers and dependent computations observe the state before the batch and
+the state after the batch, never a partially applied batch. In particular,
+clear-all followed by additions is one replacement, not an observable empty
+collection followed by a second change. If a key appears in both the removal
+and addition phases, the addition wins.
 
-```go
-type MapOp int
-
-const (
-	MapPut MapOp = iota
-	MapDelete
-)
-
-type MapMutation[K any, V any] struct {
-	Op    MapOp
-	Key   K
-	Value V
-}
-```
-
-Possible update envelope:
-
-```go
-type MapUpdate[K any, V any] struct {
-	Version  uint64
-	IsFull   bool
-	Snapshot map[K]V
-	Deltas   []MapMutation[K, V]
-}
-```
-
-Semantics:
-
-- Initial subscription usually sends a full snapshot.
-- Steady-state updates may send deltas.
-- Deltas apply only to a known prior version.
-- Missing base versions require resynchronization from a snapshot.
-- Full snapshots replace local cached state.
-- Updates may be batched.
-- Updates may be coalesced.
+Current membership uses Go equality on comparable keys. The local APIs below
+are implemented; remote wire field names and any canonical encoding remain
+undecided.
 
 ### Set Updates
 
-Sets use equivalent semantics:
-
-- Add element.
-- Remove element.
-
-For API purposes, set mutation should use upsert/delete language:
-
-- `Upsert(k)` means the key is present after the mutation.
-- `Delete(k)` means the key is absent after the mutation.
-
-Internally, this can be represented as map put/delete with unit membership values.
-
-### Map Operation Over Sets
-
-Decision: the dataflow library must support a map operation over a set.
-
-Conceptually:
+Current public payload:
 
 ```go
-MapSet[K, V](input Set[K], fn SomeFunc[K, V]) Map[K, V]
+type SetDelta[K comparable] struct {
+	Clear  bool
+	Remove []K
+	Add    []K
+}
 ```
 
-For each item `k` in the input set, the output contains:
+Examples:
+
+- Clear all: `{Clear: true}`.
+- Replace with exactly `{A, B, C}`: `{Clear: true, Add: [A, B, C]}`.
+- Add `{A}` and remove `{B, C}`: `{Remove: [B, C], Add: [A]}`.
+
+Repeated additions have set semantics; removing an absent item has no effect.
+A batch with no operations leaves the value unchanged. Replacing with the
+empty set is expressed explicitly with `Clear: true`.
+
+`SetSnapshot.WithDelta` produces a persistent snapshot. `ApplySetDelta(tx, node,
+delta)` batches mutations to a set data node; `SetUpsert` and `SetDelete` are
+single-item helpers. Published `SetChange{Key, Present}` events describe net
+membership changes, not a compact clear marker; clearing enumerates removals.
+
+### Map Updates
+
+Maps use equivalent phases, with whole values assigned in the final phase:
 
 ```go
-k -> SomeFunc(k)
+type MapEntry[K comparable, V any] struct {
+	Key   K
+	Value V
+}
+
+type MapDelta[K comparable, V any] struct {
+	Clear  bool
+	Remove []K
+	Put    []MapEntry[K, V]
+}
+```
+
+The entry-list notation avoids JSON object-key restrictions, but the current
+Go API still requires comparable keys. It does not commit to a wire encoding.
+Removing an absent key has no effect; putting an existing key replaces its
+whole value. A put of a nil/null value is distinct from removing the key.
+`Clear: true` plus `Put` replaces the whole map atomically, including replacement
+with an empty map.
+
+Decision (2026-09-27): duplicate keys in a Put batch use the last entry in the
+ordered slice. Normalize to one net change per key before publication. The local
+`MapDelta`/`WithDelta` API implements this; the eventual wire encoding must
+preserve this precedence. Current Go APIs require comparable keys; canonical
+JSON identity for non-comparable keys remains future work.
+
+`MapSnapshot.WithDelta` produces a persistent snapshot. `MapPut` and `MapDelete`
+mutate data nodes within a Tx. A transaction-level `ApplyMapDelta` helper is not
+implemented. `MapChange` records Key, Before/After, and BeforeValid/AfterValid;
+the validity flags distinguish absence from a present nil/zero value.
+
+### Snapshots, Versions, And Delivery
+
+Current local `Version` values are graph-local monotonic counters assigned as
+changed leaf and derived values are published. One transaction may advance the
+counter multiple times; snapshots carry the version at which that node last
+changed. Set/map
+`Changes()` reports the snapshot's own last delta. `ChangesSince(previous)` is
+the safe consumer API: shared roots and adjacent lineage avoid scanning, while
+arbitrary replacements or skipped bases may require reconciliation.
+
+Target remote protocol requirements:
+
+- An initial snapshot or resynchronization can use clear-all plus add/put in a
+  single atomic replacement payload.
+- Steady-state deltas apply only to a known prior version; the message envelope
+  still needs base/version and subscription identity semantics.
+- A missing base requires resynchronization. Replacement payloads still need
+  ordering checks so a stale replacement cannot overwrite newer state.
+- Updates may be batched and coalesced, preserving their resulting state and
+  atomic visibility. The ordering above is within one batch; separate batches
+  must still be composed in delivery/version order.
+- Small point updates must not scan or copy the entire collection. Explicit
+  replacement may necessarily process every supplied entry; derived operators
+  must also account for any affected output memberships.
+
+### Union Of Sets
+
+Decision (2026-09-26): provide a built-in function taking two or more sets of
+the same element type and returning their union:
+
+```text
+Union(S1, S2, ..., Sn): Set<K>    where n >= 2
 ```
 
 Required behavior:
 
-- Adding `k` schedules computation of `SomeFunc(k)`.
-- Deleting `k` deletes `k` from the output without recomputing the whole output.
-- Updating inputs used by `SomeFunc(k)` should only dirty affected keys when the dependency relationship is known.
-- Results should be stored in an incremental map-shaped node.
+- An item is present in the output whenever any input contains it.
+- Removing an item from one input must not remove it from the union while
+  another input still contains it.
+- Apply each input's atomic delta without publishing intermediate states;
+  downstream events also respect the existing fixed-point semantics.
+- Process small input mutations incrementally. Only output membership changes
+  need to propagate, e.g. the first contributing input adds an item or the last
+  contributing input removes it.
+
+Implemented as `nodes.Union(className, inputs...)`, requiring 2+ inputs. It uses
+per-graph persistent contributor counts, so point updates do not rebuild the
+union or scan all input sets. Clear-all removes only that input's contribution,
+not the entire union.
+
+### Additional Set Algebra And Map Projections
+
+Implemented (2026-09-27) in `reco/nodes`, using only public reco APIs:
+
+- `nodes.Intersection(className, inputs...)`: keys present in every input; requires 2+ sets.
+- `nodes.Xor(className, inputs...)`: symmetric difference, meaning odd membership parity
+  across 2+ inputs, not "exactly one" when there are more than two inputs.
+- `nodes.Difference(className, first, others...)`: first minus the union of the other sets;
+  requires at least one other set. Relative complement is
+  `nodes.Difference(className, universe, excluded)`; no implicit universal set exists.
+- `nodes.MapKeys(className, mapNode)`: the key set, ignoring value-only changes. Values
+  need not be comparable.
+- `nodes.MapValues(className, mapNode)`: distinct comparable values with contributor counts.
+  Removal of one duplicate does not remove the value until its last contributor
+  disappears. Swaps/transfers within a transaction do not flicker memberships.
+
+Repeated input nodes count separately for XOR, so `nodes.Xor("xor", a, a)` is empty, whereas
+union/intersection with the same input twice retains its memberships. Difference
+with itself is empty. All nodes have per-graph caches, persistent count/output
+storage, atomic touched-key deltas, and no notifications for unchanged outputs.
+Initial state, clear, and arbitrary replacements can require enumeration;
+steady-state changes do not scan collection contents.
+
+Map entry equality preserves comparable identities: use `ValueEqualer` when
+provided, otherwise Go equality for comparable values and `reflect.DeepEqual`
+for non-comparable values. In particular, distinct pointers with equal pointees
+are distinct values; this matters when projecting values into set keys. Scalar
+node default equality is unchanged. MapValues requires reflexive values (no
+NaNs), dynamically comparable interface values, and custom equality consistent
+with Go equality. Nil and zero values are ordinary members, not deletion markers.
+
+Tests cover algebraic membership, duplicate inputs/values, atomic events,
+replacements/clear, concurrent graph isolation, and exact mapper invocation
+counts. White-box tests count input hashes/comparisons and inspect actual output
+HAMT sharing at 1,024 and 16,384 entries. Size-scaling benchmarks include each new
+operator at 1,000/100,000 entries and delta sizes 1/16.
+
+### Map Operation Over Sets
+
+Decision (refined 2026-09-26): the dataflow library must support a map operation
+over a set in which the pure function returns only the value. The input key
+is preserved as the output key.
+
+Conceptually:
+
+```text
+S: Set<K>
+F: K -> V
+map(F, S): Map<K, V>
+```
+
+For each input item `k`, the output contains `k -> F(k)`. The output map's
+keys are exactly the input set's members. Key remapping is not a requirement,
+so this operator needs no output-key collision policy.
+
+Implemented as `nodes.MapSet(className, input, fn)` with `K comparable`, `V any`,
+and a pure `fn func(K) V`. Its behavior:
+
+- Adding `k` computes `F(k)` once when the operator evaluates.
+- Removing `k` deletes that same key from the output without reevaluating
+  unrelated inputs or scanning the map.
+- Results are an incremental map-shaped node using the same atomic delta
+  semantics as map data nodes.
+
+Deferred extension: reactive per-key dependencies could dirty only affected
+keys and reevaluate their values in place. Today's mapper depends only on k;
+it cannot declare other reactive inputs or return per-key Result metadata.
 
 This is expected to be a central operation for computing per-peer or per-node parts of `MapResponse`.
 
-Open questions:
+Open questions for that extension:
 
-- Whether `SomeFunc(k)` is a normal function node template, a per-key subgraph, or a specialized collection operator.
-- How dependencies from `SomeFunc(k)` to other nodes are declared.
+- Whether reactive `F(k)` uses a function-node template, a per-key subgraph, or a specialized operator.
+- How dependencies from `F(k)` to other nodes are declared.
 - Whether failures for individual keys produce partial map values.
 
 ### Sorted Values Of A Map
 
-Decision: the system should likely provide a node type that produces sorted values from a map node using a configured sort key.
+Deferred proposal: `reco/nodes` may provide an operator producing sorted map
+values using a configured sort key. No SortedValues API is implemented.
 
 Example use case:
 
@@ -589,14 +1039,14 @@ Example use case:
 
 Conceptually:
 
-```go
-SortedValues[K, V](input Map[K, V], less func(a, b V) bool) []V
+```text
+SortedValues(className, input: Node<MapSnapshot<K, V>>, less): Node<sorted values>
 ```
 
 or:
 
-```go
-SortedValuesByKey[K, V, S](input Map[K, V], sortKey func(V) S) []V
+```text
+SortedValuesByKey(className, input: Node<MapSnapshot<K, V>>, sortKey): Node<sorted values>
 ```
 
 Requirements:
@@ -613,31 +1063,34 @@ Open questions:
 
 ### Canonical Collection Identity
 
-Map keys and set elements are compared by canonical JSON bytes.
-
-This allows collection operations even when Go values are not comparable.
+Deferred proposal: canonical JSON identity could allow non-comparable keys or
+elements. Current map keys and set elements use Go comparability and equality,
+not encoded bytes. Changing that contract requires an explicit API decision.
 
 ### V1 Constraint
 
-Decision: map entry mutation is only `Put(key, wholeValue)` or `Delete(key)`.
+Decision: map entry mutation is `Put(key, wholeValue)` or `Delete(key)`; an
+atomic batch may additionally clear the entire collection before these entry
+operations. Replacement is clear-all plus puts.
 
 Decision: no recursive nested patch language in the first version.
 
 Open questions:
 
-- Whether public APIs expose dedicated set types.
 - Whether map values can be partial values.
 - Whether collection deltas are persisted in transaction logs or only used in propagation.
-- Whether incremental collection support should be implemented in the first prototype or added after full-value propagation works.
-- Whether `Map[K,V]` and `Set[K]` are nodes themselves, value types returned by nodes, or both.
-- Whether collection mutation APIs live only on transactions or also on collection nodes.
-- Whether snapshots expose `github.com/benbjohnson/immutable` types directly or through Recontrol-owned interfaces.
+
+Settled locally: incremental collections are implemented. SetSnapshot and
+MapSnapshot are reco-owned value types hiding immutable's storage; constructors
+return typed Node handles. Data mutation helpers operate on Tx; snapshot
+WithDelta enables external operators to construct immutable derived values.
 
 ## Persistent Data Structures And Snapshotting
 
 Decision: large map- and struct-shaped values should use persistent immutable data structures where that makes snapshots and diffs cheap.
 
-Candidate library: `github.com/benbjohnson/immutable`, especially `immutable.Map`.
+Decision: the prototype uses `github.com/benbjohnson/immutable.Map`, wrapped by
+Recontrol-owned snapshot and mutation APIs.
 
 Motivation:
 
@@ -701,6 +1154,11 @@ Open questions:
 
 ## Execution Model
 
+Current implementation: Graph.Update performs synchronous propagation through a
+sparse, dependency-ordered dirty queue, then invokes subscribers. It creates no
+worker goroutines. Eval grants access to declared inputs, not cancellation or
+deadlines. The executor/scheduler below is a deferred target.
+
 Decision: the library must not create unbounded goroutines.
 
 Decision: computation must go through an explicit executor/scheduler.
@@ -749,33 +1207,38 @@ Decision: static definitions should be reusable across many graph instances.
 
 Decision: obvious/lightweight nodes should be definable inline with closures, similar in spirit to `http.HandlerFunc`, without requiring a package-level named type and formal methods.
 
-Decision: node identity can be supplied explicitly by the node definition, likely via an interface. For inline or object-backed nodes, pointer identity may be acceptable where it is stable and intentional.
-
-Potential identity interfaces:
+Implemented identity API:
 
 ```go
-type NodeIdentity interface {
-	NodeKey() string
-}
-
-type NodeDefinition interface {
-	NodeIdentity
-	// ...
-}
+type NodeClassName string
+func (n Node[T]) ClassName() NodeClassName
 ```
 
-Open detail: if pointer identity is allowed, the API must make clear that two separately allocated but otherwise identical inline definitions are distinct nodes.
+Every constructor, including those in `reco/nodes`, takes a className of this
+type. Untyped string literals work directly; computed string names need an
+explicit `NodeClassName(s)` conversion. Names are unique within a graph,
+including dependencies, and can be reused across independent graphs.
 
-Decision: the API should be strongly typed with Go generics where possible, while accepting that some validation happens at runtime, such as JSON round-trip validation for keys and values.
+Runtime handles use definition-pointer identity. Separate constructor calls
+produce separate definitions; equal class names do not intern or merge them,
+and registering both in one graph is an error. There is no public NodeIdentity
+or NodeDefinition interface. External packages create nodes with Operator and
+Input, using library-owned Node handles. Remote class/version registration and
+generic instance-key addressing remain open.
+
+Decision: use strongly typed Go generics where possible, with declaration-time
+validation of dependency shapes and registration-time validation of names and
+DAG structure. JSON compatibility validation remains deferred.
 
 Decision: reflection is acceptable for API ergonomics and declaration-time validation.
 
 Requirements for reflection use:
 
 - Reflection should happen when node definitions are declared, bound, or first instantiated.
-- Reflection should validate dependency names, field types, JSON compatibility where applicable, and compute function shape.
+- Reflection validates dependency names, field types, and compute function shape.
 - Reflection failures should be reported early, preferably before the graph starts processing transactions.
-- Reflection should not be on hot recomputation paths after a node definition has been checked and compiled into an internal representation.
+- Target: remove reflection from hot recomputation paths. Currently Func still
+  uses reflection to populate dependency structs; Operator/Input avoids that adapter.
 - The runtime should cache any adapters, field indexes, and type metadata produced by reflection.
 - Reflection-derived metadata should be memoized across declarations and graph instances where the reflected type/function shape is the same.
 - Memoization keys should account for dependency struct type, compute function type, output type, and any binding shape needed to preserve safety.
@@ -786,12 +1249,14 @@ Decision: support both a full typed-struct dependency style and a lightweight in
 
 Preferred full style: typed struct dependencies. This is the main API direction for serious reusable nodes.
 
-Preferred lightweight style to explore: inline anonymous-struct dependencies. This is intended for small local nodes where defining a package-level dependency struct feels too heavy.
+Implemented lightweight style: inline anonymous-struct dependencies with Deps,
+for small local nodes that do not need a named dependency struct.
 
-Desired dependency model:
+Current dependency model:
 
-- A node definition declares a set of named dependencies.
-- A graph instantiates that node by binding each dependency name to another node.
+- Func binds named dependency fields to other Node handles at declaration time.
+- Operator declares a dependency slice and reads typed inputs with Input(eval, node).
+- Register recursively instantiates those definitions within each graph.
 - The compute function is called once all dependencies are first available.
 - The compute function is called again when any dependency changes.
 - Dependency type mismatches should be caught at compile time where possible, and otherwise at graph construction time.
@@ -805,11 +1270,15 @@ type PeerInputs struct {
 	Settings Dep[TailnetSettings]
 }
 
-peerView := Func("peerView", Bind[PeerInputs]{
+peerView := Func("peerView", struct {
+	Node     Node[NodeState]
+	Profile  Node[UserProfile]
+	Settings Node[TailnetSettings]
+}{
 	Node:     nodeState,
 	Profile:  userProfile,
 	Settings: tailnetSettings,
-}, func(ctx Context, in PeerInputs) Result[PeerView] {
+}, func(eval Eval, in PeerInputs) Result[PeerView] {
 	return OK(computePeerView(in.Node.Value(), in.Profile.Value(), in.Settings.Value()))
 })
 ```
@@ -827,7 +1296,7 @@ peerView := Func("peerView",
 		Profile:  userProfile,
 		Settings: tailnetSettings,
 	}),
-	func(ctx Context, in struct {
+	func(eval Eval, in struct {
 		Node     NodeState
 		Profile  UserProfile
 		Settings TailnetSettings
@@ -837,51 +1306,40 @@ peerView := Func("peerView",
 )
 ```
 
-The exact syntax above is illustrative. The important design intent is:
+These examples use the current Func/Deps binding shapes; the application types
+and computePeerView are illustrative. The important design intent is:
 
 - Callers can choose a named dependency struct for clarity and reuse.
 - Callers can choose an inline struct for lightweight local nodes.
 - Both forms preserve named dependencies.
 - Both forms compile to the same runtime representation.
-- The runtime can still validate JSON compatibility, DAG constraints, and dependency binding.
+- The runtime validates DAG constraints and dependency binding; it does not yet
+  validate JSON compatibility.
 
-Possible lower-level builder style, if needed:
-
-```go
-n := NewFuncNode[In, Out]("foo").
-	DependsOn("node", nodeState).
-	DependsOn("profile", userProfile).
-	WithVersion(1).
-	WithDebounce(debounce).
-	Compute(func(ctx Context, in In) Result[Out] {
-		// ...
-	})
-```
-
-Possible type-based style:
+Current lower-level extension API:
 
 ```go
-type FooNode struct{}
-
-func (FooNode) Definition() NodeDefinition {
-	return NewFuncNode[In, Out]("foo").
-		DependsOn(a, b).
-		WithVersion(1).
-		Compute(computeFoo)
-}
+func Operator[T any](className NodeClassName, deps []Dependency, newCompute func() Compute[T]) Node[T]
+type Compute[T any] func(Eval) Result[T]
+func Input[T any](eval Eval, node Node[T]) Dep[T]
 ```
+
+The factory owns per-graph incremental state. Earlier builder/type-based API
+sketches are not implemented; versioning and debounce methods remain deferred.
 
 Open questions:
 
-- Exact representation of node IDs.
-- How dependencies are typed.
-- Exact reflection rules and memoization keys for typed-struct and inline-struct dependency APIs.
+- How class names and function versions compose with generic instance keys for remote addressing.
+- How to remove remaining reflection from Func recomputation.
 - Whether dynamic graph changes are needed later.
-- How generic APIs map to untyped internal canonical storage.
-- Whether pointer identity is too implicit for durable/restartable node identity.
-- Whether inline nodes must still provide stable string keys.
+- How generic APIs map to future canonical storage/transport encodings.
+- How definition identity is restored across process restarts.
 
 ## Node Runtime State
+
+Current runtime state lives in Graph-owned registries keyed by node definition.
+Operator caches are created per graph. Local subscriptions also live on Graph;
+upstream remote-watch lifetimes in the following target model are deferred.
 
 Each node should track:
 
@@ -896,19 +1354,21 @@ Each node should track:
 - Active upstream subscription handles.
 - Active downstream subscribers.
 
-Decision: every function node must internally track all relevant subscriptions.
+Target: the runtime must track the watches needed by function dependencies;
+pure compute functions should not manually manage network subscriptions.
 
 Open questions:
 
-- Whether downstream subscriber state lives on nodes or in a separate subscription manager.
+- Whether remote watches need a separate manager beyond Graph's local subscription registry.
 - How much previous-value history is retained.
 - Whether old/new diff support is universal or only subscription-event metadata.
 
 ## Fallback Computation
 
-Current status: this section is retained as background, but it is not part of the first prototype direction.
-
-Decision update: the first prototype should assume the owning shard has replicated all data required for local computation. Remote fallback computation should not be a core design dependency.
+Current status: fallback computation remains deferred. Normal subscription to
+a function on its remote owner is in scope and is distinct from computing a
+substitute locally during an outage. The proposals below do not require all
+inputs to be pre-replicated or make fallback a prerequisite for remote watches.
 
 Decision: computation normally runs on the owning shard.
 
@@ -934,68 +1394,111 @@ Open questions:
 
 ## Prototype Status
 
-Current implementation status as of 2026-07-26:
+Current implementation status as of 2026-09-27:
 
-- A minimal Go module exists in the repository root.
-- Package name is `recontrol`.
+- A minimal Go module exists, with the library in `reco` as package `reco`.
+- `cmd/recontrol` contains the start of an in-memory Tailscale control server.
+- `cmd/webdemo` serves an embedded live graph UI over HTTP/WebSocket.
 - `Result[T]`, `Node[T]`, `Dep[T]`, `Graph`, `Tx`, `Snapshot[T]`, `Event[T]`, and subscription option types exist.
-- Scalar data nodes can be created with `Data[T](key)`.
+- All constructors take `NodeClassName`; `Node.ClassName()` returns it.
+  Duplicate names are rejected graph-wide, including recursive dependencies.
+- Scalar data nodes can be created with `Data[T](className)`.
 - Function nodes can be created with `Func`.
+- Stateful incremental function nodes can be created outside the library with
+  `Operator`, per-graph compute factories, and declared `Input` reads.
 - Both dependency API directions have an initial prototype:
   - typed dependency input structs using `Dep[T]`
   - inline dependency structs using `Deps(...)`
 - Reflection validates dependency declarations early and memoizes reflected shape metadata.
 - One graph serializes transactions through `Graph.Update`.
 - Transactions can set scalar data nodes with package-level `Set(tx, node, value)`.
-- The runtime recomputes function nodes synchronously until a fixed point after each transaction.
+- The runtime queues only affected functions in dependency order, at most once
+  per transaction, skipping unchanged inputs/outputs and unrelated nodes.
 - Subscriptions deliver `Event[T]` values containing previous and current snapshots.
-- Mutable map and set data nodes exist with copy-on-write prototype snapshots:
+- Mutable map and set data nodes use persistent HAMT snapshots:
   - `MapData[K,V]`
   - `SetData[K]`
   - `MapPut`
   - `MapDelete`
   - `SetUpsert`
   - `SetDelete`
+  - `SetDelta` / `ApplySetDelta`
+  - `MapDelta` / `MapEntry` for snapshot WithDelta batches
+- `nodes.Union`, `nodes.Intersection`, `nodes.Xor`, and `nodes.Difference`
+  incrementally compute set algebra. `nodes.MapKeys` and `nodes.MapValues`
+  project maps; MapValues tracks duplicate contributors. `nodes.MapSet`
+  evaluates pure `F(k)` only for newly added keys. All use public
+  Operator/snapshot APIs and preserve structural sharing and touched-key changes.
+- Set/map snapshots have public `WithDelta` and `ChangesSince` methods. Custom
+  immutable values can implement the optional equality/version interfaces.
+- Set/map snapshots support both callback Range and native Go All iterators.
+- The webdemo supports atomic transaction staging/commit/rollback, dependency
+  highlighting, and a details -> totalRunes -> score -> summary pipeline. Rune
+  totals are maintained by a demo-local incremental map reduction, not a public
+  nodes reduction API. Initial/reconnect messages are full snapshots; subsequent
+  messages carry scalar changes and touched-key collection patches.
+- `SubscribeMap` atomically returns an initial snapshot and subscribes to
+  transaction-local keyed mutations. Adjacent deltas avoid whole-map diffs;
+  arbitrary replacements and skipped delta bases use reconciliation.
 - DAG cycle rejection is implemented.
 
 Current prototype simplifications:
 
-- No executor, debounce, or fairness scheduler yet.
+- No asynchronous/rate-controlled executor, debounce, or fairness scheduler yet.
 - No durable storage yet.
 - No canonical JSON validation yet.
-- Map/set snapshots use copy-on-write Go maps, not `github.com/benbjohnson/immutable`.
-- No map-over-set operator yet.
+- `MapSet` does not yet support reactive per-key dependencies or partial values.
+- Collection keys still use Go comparability, not canonical JSON identity.
+- `ApplySetDelta` clear currently enumerates removals to preserve the existing
+  point-change event API; a first-class compact clear event remains future work.
 - No sorted-values node yet.
-- No Tailscale `MapResponse` example yet.
+- The control-server sketch keeps nodes in a reco map data node and exposes an
+  O(1) derived response-state node that preserves the persistent snapshot and
+  its keyed mutations. It does O(N) work only to build the required complete
+  response when a map stream starts.
+- A lite map update is a HAMT point update. Streaming polls consume its keyed
+  reco mutation directly and encode `Node`, `PeersChanged`, or `PeersRemoved`
+  without rebuilding or diffing full `MapResponse` values.
+- Per-stream control-server mutations are coalesced by the application's map
+  entry key (the peer's public key), not by a reco class name, before wire encoding.
 - Subscription options are accepted but not semantically implemented beyond fixed-point-by-transaction behavior.
-- Recompute currently scans function nodes until stable rather than using a dirty queue.
+- Registration builds dependency indexes/topological ranks; mutation-time work
+  visits the affected subgraph rather than the full node registry. Each invoked
+  generic function still reads its declared dependencies.
 - Reflection metadata is memoized, but the compute adapter still uses reflection to populate dependency structs.
 
-Recommended first prototype sequence:
+Historical first prototype sequence (not the current implementation queue;
+the discussion TODOs at the top take precedence):
 
 1. Build canonical JSON identity helpers.
 2. Build local node registry and DAG validation.
-3. Build first-class incremental map and set nodes, including `Set[string]` and integer sets.
+3. Build first-class incremental map and set nodes. (Implemented as
+   MapSnapshot/SetSnapshot values and MapData/SetData constructors.)
 4. Build map-over-set operation.
 5. Build local data nodes and function nodes.
 6. Build local transaction commit with durable storage interface.
 7. Build local propagation with explicit executor.
 8. Build fixed-point detection for selected output nodes.
 9. Build subscriptions with old/new value events and fixed-point-only output callbacks.
-10. Add immutable snapshot support for map-shaped nodes.
+10. Add immutable snapshot support for map-shaped nodes. (Implemented for maps
+    and sets.)
 11. Add sorted-values-of-map node.
 12. Add basic `MapResponse` internal representation and delta tracking.
-13. Add single-process multi-shard routing with local replicated inputs.
+13. Add Locator-based multi-shard resolution and remote data/function watches.
 14. Add debouncing and basic fairness across customers.
 15. Add Tailscale `MapResponse` initial-complete and subsequent-delta encoder prototype.
 
-The initial target should be a single-process, multi-shard simulation that can be tested deterministically.
+Use a single-process multi-shard simulation for deterministic tests, alongside
+cross-machine transport tests. Work on the control-server application remains
+deferred while the primitives and remote-watch design are discussed.
 
 ## Testing Strategy
 
-The prototype should include tests for:
+Current and target coverage (deferred features require future tests):
 
-- Canonical JSON equality across non-comparable values.
+- Class-name preservation, empty-name rejection, graph-wide name uniqueness,
+  repeat registration, and definition/name reuse across independent graphs.
+- Canonical JSON equality across non-comparable values (deferred).
 - DAG cycle rejection.
 - Atomic multi-cell transaction commit.
 - Durable commit before propagation.
@@ -1003,11 +1506,17 @@ The prototype should include tests for:
 - Debouncing that skips intermediate values but converges to final state.
 - Old/new subscription events.
 - Subscribe and unsubscribe lifecycle.
+- Locator routing for generic keys, including customer-containing tuples.
+- Cross-machine watches of both data and function instances.
+- Remote atomic collection deltas, reconnect/resync, and watch cleanup.
 - Replicated-input cache usage during local recomputation.
 - Out-of-order update handling.
 - Map/set snapshot and delta application.
 - Set upsert/delete behavior for string and integer keys.
 - Map-over-set incremental behavior.
+- Intersection/Xor/Difference algebra, repeated inputs, MapKeys projections,
+  and duplicate-value contributor counts for MapValues.
+- Exact delta-sized compute/hash/equality work and actual HAMT sharing.
 - Sorted-values ordering and incremental invalidation.
 - Fairness across customers.
 - Partial result propagation.
@@ -1021,23 +1530,19 @@ Open questions:
 - Whether tests should use fake time for scheduler/debounce behavior.
 - Whether durability tests use temp files or an in-memory recorder.
 - Whether the prototype should expose deterministic executor stepping for tests.
-- Whether large-tailnet benchmarks should be part of the prototype from the start.
+- Which additional end-to-end large-graph workloads to add to the existing
+  delta-size, collection-size, and unrelated-graph-size benchmarks.
 
 ## Current Open Questions
 
 ### API
 
-- What is the exact public package structure?
-- What are the public node ID types?
-- Are function/node names scoped globally within a graph definition, package scoped, or scoped by an explicit namespace?
-- Are dependencies supplied as typed fields, positional inputs, or context lookups?
-- Should named dependencies be represented by a struct type, builder calls, or both?
-- How does one reusable static node definition get instantiated across many graph instances?
-- When is pointer identity acceptable, and when is an explicit stable key required?
-- What is the public API for set upsert/delete?
-- What is the public API for map-over-set?
+- How do graph-local NodeClassName values, function versions, and generic
+  instance keys compose into portable remote addresses?
+- How are reactive per-key dependencies declared for a future MapSet extension?
 - What is the public API for sorted map values?
-- What is the shape of `Result[T]`, and does it include structured status metadata instead of `error`?
+- Should Result's existing error/partial metadata gain a portable structured status type?
+- What is the transaction-level map batch helper API alongside ApplySetDelta?
 
 ### Encoding
 
@@ -1067,30 +1572,30 @@ Open questions:
 
 ### Subscriptions
 
-- Are subscription events delivered by callback, channel, or pull API?
-- Is unsubscribe synchronous?
-- How is backpressure handled?
-- Can subscribers request snapshots?
-- How are out-of-order events represented and reconciled?
-- Are fixed-point-only callbacks implemented as subscription options?
+- Should a channel/pull API complement the current synchronous local callbacks?
+- What are remote unsubscribe acknowledgment and watch cleanup semantics?
+- How is remote backpressure handled?
+- Should scalar/set watchers get atomic snapshot-plus-watch, like SubscribeMap?
+- How are out-of-order remote events represented and reconciled?
+- How do FixedPointOnly/Coalesce options interact with an asynchronous executor?
 
 ### Partial Results And Errors
 
 - What is the structured error type?
-- Can partial results be cached?
-- Can partial results be used as dependencies?
-- How does a downstream function know whether an input is partial?
-- Are errors part of the value identity or only metadata?
+- How should partial/error results be stored in durable remote caches?
+- How should Snapshot/Event expose result status? Computations already receive
+  validity, error, and partial-result metadata through Dep accessors.
+- How are errors compared across the wire? Local propagation already includes
+  result error/partial status when deciding whether a node changed.
 
 ### Incremental Collections
 
-- Are map/set deltas part of the first prototype?
-- Should the public API expose sets directly?
-- Are collection versions per node or per collection value?
 - Are deltas persisted or only propagated?
-- Can function nodes emit deltas directly, or only full values at first?
-- Can persistent immutable maps provide cheap enough changed-path information?
-- Does Recontrol need a fork or wrapper around `github.com/benbjohnson/immutable`?
+- How do graph-local versions map to remote stream epochs and base versions?
+- How should events represent compact clear/replacement operations?
+- Can a richer changed-path representation retain incremental behavior across
+  skipped snapshots? Current operators publish WithDelta snapshots and consume
+  ChangesSince; arbitrary/skipped bases may need full reconciliation.
 
 ### Tailscale MapResponse
 
@@ -1100,17 +1605,21 @@ Open questions:
 - How should client `CapabilityVersion` select output behavior?
 - How should `PeersChangedPatch` be generated and selected?
 - How should `PacketFilters` and `DisplayMessages` patch semantics map to Recontrol map deltas?
-- How does the subscription watcher cheaply diff two full `MapResponse` snapshots?
+- How should non-peer `MapResponse` fields expose keyed/path mutations to the
+  subscription watcher?
 - What benchmarks define acceptable sub-linear behavior?
 
 ### Distribution
 
 - What is the eventual transport abstraction?
+- How does a typed Locator expose local ownership versus a remote transport?
+- How are portable definition/version identities registered and paired with
+  generic instance keys in query/watch messages?
 - Who owns shard discovery?
 - How are routing changes deployed?
 - How do subscriptions survive customer migration?
-- How does authentication/authorization fit if this becomes networked?
-- Does the system need remote subscriptions at all if shared state is replicated locally?
+- How does authentication/authorization fit into peer sessions and node watches?
+- How are shared remote watches and sessions owned and released?
 
 ## Decisions To Revisit
 
@@ -1121,7 +1630,7 @@ These decisions are good enough for prototyping but may need revision:
 - Function values are not durably persisted.
 - Maps and sets are the only incremental collections in scope.
 - No nested patch language in v1.
-- Single-process multi-shard simulation before real networking.
+- Exact division between deterministic in-process and multi-process transport tests.
 - Fallback computation is allowed when cached inputs are available. This is now deprioritized and may be removed from the first prototype.
 - The internal representation may differ from `tailcfg.MapResponse` as long as the encoder preserves Tailscale wire semantics.
 
