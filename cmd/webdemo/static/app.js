@@ -8,15 +8,66 @@ const dependencies = {union: ["a", "b"], details: ["union"], totalRunes: ["detai
 let socket, reconnectTimer, retry = 0, paused = false, live = false, revision = null;
 let transaction = null, nextRequest = 0, highlightedDep = null;
 const leafIDs = ["a", "b", "label", "weight"];
+let peerInfo = null, peerStatus = null;
+
+function owns(id) { return !peerInfo || peerInfo.owners[id] === peerInfo.local; }
+
+function editable(el) {
+  const id = el.closest(".node")?.id.slice(5);
+  return !id || owns(id);
+}
 
 function status(text, online) {
   live = online;
   $("status").textContent = text;
   $("status").dataset.state = online ? "live" : "offline";
   $("stale").hidden = online || values.size === 0;
-  document.querySelectorAll("[data-edit]").forEach((el) => { el.disabled = !online || !!transaction?.request; });
+  document.querySelectorAll("[data-edit]").forEach((el) => { el.disabled = !online || !!transaction?.request || !editable(el); });
   $("connection-toggle").textContent = paused ? "Reconnect" : "Disconnect";
   updateTxControls();
+  renderPeerStatus();
+}
+
+function configurePeer(info) {
+  peerInfo = info || null;
+  $("peer-panel").hidden = $("peer-activity").hidden = !peerInfo;
+  if (!peerInfo) return;
+  document.title = `reco · process ${info.local.toUpperCase()}`;
+  $("graph-mode").textContent = `Process ${info.local.toUpperCase()} / Two processes / One metagraph / In memory`;
+  $("peer-title").textContent = `METAGRAPH ${info.metagraph} · PROCESS ${info.local.toUpperCase()}`;
+  $("peer-link").href = info.peerURL;
+  $("peer-link").textContent = `Open process ${info.remote.toUpperCase()} ↗`;
+  for (const id of leafIDs) {
+    const card = $("node-" + id);
+    card.classList.toggle("remote", !owns(id));
+    let badge = card.querySelector(".ownership");
+    if (!badge) { badge = document.createElement("p"); badge.className = "ownership"; card.querySelector(".node-heading").after(badge); }
+    badge.textContent = owns(id) ? `Owned here · process ${info.local.toUpperCase()}` : `Remote mirror · owned by process ${info.remote.toUpperCase()}`;
+  }
+}
+
+function renderPeerStatus() {
+  if (!peerInfo) { $("peer-stale").hidden = true; return; }
+  const st = peerStatus;
+  const fresh = live && st?.connected && st.ready === st.watching;
+  $("peer-status").textContent = !live ? "Browser disconnected · peer status unknown" : !st?.connected ? "Peer disconnected · remote values are stale" : !fresh ? `Receiving snapshots · ${st.ready}/${st.watching} watches ready` : `Connected to ${st.remote.toUpperCase()} · ${st.ready} remote watches · ${st.serving} exports`;
+  $("peer-status").title = st?.epoch ? `Remote process epoch: ${st.epoch}` : "";
+  $("peer-stale").hidden = fresh;
+  $("peer-stale").textContent = live ? "Remote state is not fresh. Owned leaves remain editable. Cached mirrors and derived values may be stale; missing values wait for their first snapshot. Reconnect replaces remote state before streaming deltas again." : "This browser is disconnected. Both graph values and peer status shown here are cached.";
+  $("peer-panel").dataset.state = fresh ? "live" : "stale";
+}
+
+function peerWire(wire) {
+  $("peer-wire").textContent = `${wire.direction.toUpperCase()}\n${wire.data}`;
+  const li = document.createElement("li");
+  const time = document.createElement("time"); time.textContent = new Date().toLocaleTimeString();
+  const body = document.createElement("span");
+  try {
+    const frame = JSON.parse(wire.data);
+    body.textContent = `${wire.direction} · ${frame.type}${frame.id ? ` #${frame.id}` : ""}${frame.type === "value" ? frame.full ? " · snapshot" : ` · delta ${frame.base} → ${frame.version}` : ""} · ${new TextEncoder().encode(wire.data).length} bytes`;
+  } catch { body.textContent = `${wire.direction} · large message (preview truncated)`; }
+  li.append(time, body); $("peer-log").prepend(li);
+  while ($("peer-log").children.length > 30) $("peer-log").lastChild.remove();
 }
 
 function log(text) {
@@ -33,6 +84,7 @@ function log(text) {
 function send(command) {
   if (!live || socket?.readyState !== WebSocket.OPEN || transaction?.request) return false;
   $("error").hidden = true;
+  if (command.node && !owns(command.node)) { showError("Edit that leaf in its owning process."); return false; }
   if (transaction) {
     if (transaction.edits.length >= 128) { showError("A transaction can contain at most 128 edits."); return false; }
     // Normalize/validate only the edited leaf. The server validates again at
@@ -72,10 +124,6 @@ function draftValues() {
       case "remove": draft.get(edit.node).delete(edit.item); break;
       case "clear": draft.set(edit.node, new Set()); break;
       case "replace": draft.set(edit.node, new Set(edit.items)); break;
-      case "reset":
-        draft.set("a", new Set(["amber", "birch", "cedar"]));
-        draft.set("b", new Set(["cedar", "dune"]));
-        draft.set("label", "Word garden"); draft.set("weight", 3); break;
     }
   }
   return draft;
@@ -94,7 +142,7 @@ function updateTxControls() {
     $("tx-edits").append(li);
   }
   for (const id of leafIDs) {
-    $("node-" + id).classList.toggle("draft", !!transaction?.edits.some((edit) => edit.node === id || edit.op === "reset"));
+    $("node-" + id).classList.toggle("draft", owns(id) && !!transaction?.edits.some((edit) => edit.node === id));
   }
 }
 
@@ -133,6 +181,8 @@ function connect() {
 }
 
 function receive(message) {
+  if (message.type === "peer") { peerStatus = message.peer; renderPeerStatus(); return; }
+  if (message.type === "peer-wire") { peerWire(message.wire); return; }
   if (message.type !== "committed") $("wire-message").textContent = JSON.stringify(message, null, 2);
   if (message.type === "error") {
     if (transaction && transaction.request !== null && transaction.request === message.request) { transaction.request = null; status("Live", true); }
@@ -150,7 +200,7 @@ function receive(message) {
   if (message.type !== "snapshot" && message.type !== "update") throw new Error("unknown message type");
   const initial = message.type === "snapshot";
   if (!initial && (!live || message.revision !== revision + 1)) throw new Error("revision gap");
-  if (initial) { values.clear(); versions.clear(); }
+  if (initial) { values.clear(); versions.clear(); configurePeer(message.info); peerStatus = message.peer || null; }
   const changed = [];
   for (const node of message.nodes || []) {
     if (Object.hasOwn(node, "value")) {
@@ -172,7 +222,7 @@ function receive(message) {
   retry = 0;
   status("Live", true);
   $("revision").textContent = `transaction ${revision}`;
-  render(changed, initial);
+  render(initial ? [...leafIDs, ...Object.keys(dependencies)] : changed, initial);
   updateTxControls();
   log(initial ? `Snapshot · ${changed.length} nodes · transaction ${revision}. Fully synchronized.` : `Transaction ${revision} · ${changed.length ? changed.join(" → ") : "no value changes"} · applied atomically.`);
 }
@@ -188,10 +238,10 @@ function render(changed, initial) {
     else if (id === "details") renderMap(value);
     else if (id === "label" || id === "weight") {
       // Do not discard another tab's in-progress draft on unrelated updates.
-      if (initial || document.activeElement !== $(id)) $(id).value = value;
-    } else $("value-" + id).textContent = value;
+      if (initial || document.activeElement !== $(id)) $(id).value = value ?? "";
+    } else $("value-" + id).textContent = value ?? "Waiting for remote state…";
     const version = document.querySelector(`[data-version="${id}"]`);
-    if (version) version.textContent = `v${versions.get(id)}`;
+    if (version) version.textContent = versions.has(id) ? `v${versions.get(id)}` : "awaiting snapshot";
   }
   for (const id of changed) {
     const el = $("node-" + id);
@@ -208,7 +258,7 @@ function renderSet(id, value, display) {
   if (!value?.size) {
     const empty = document.createElement("span");
     empty.className = "empty";
-    empty.textContent = "∅ empty set";
+    empty.textContent = value ? "∅ empty set" : "Waiting for remote state…";
     target.append(empty);
     return;
   }
@@ -228,7 +278,7 @@ function renderSet(id, value, display) {
       remove.textContent = "×";
       remove.setAttribute("aria-label", `Remove ${key} from set ${id.toUpperCase()}`);
       remove.setAttribute("data-edit", "");
-      remove.disabled = !live || !!transaction?.request;
+      remove.disabled = !live || !!transaction?.request || !owns(id);
       remove.addEventListener("click", () => send({op: "remove", node: id, item: key}));
       chip.append(remove);
     }
@@ -239,7 +289,7 @@ function renderSet(id, value, display) {
 function renderMap(value) {
   const target = $("value-details");
   target.replaceChildren();
-  for (const [key, word] of [...value].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
+  for (const [key, word] of [...(value || [])].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
     const row = document.createElement("tr");
     for (const cell of [key, word.upper, word.runes]) {
       const td = document.createElement("td");
@@ -248,11 +298,11 @@ function renderMap(value) {
     }
     target.append(row);
   }
-  if (value.size === 0) {
+  if (!value?.size) {
     const row = document.createElement("tr"), cell = document.createElement("td");
     cell.colSpan = 3;
     cell.className = "empty";
-    cell.textContent = "∅ empty map";
+    cell.textContent = value ? "∅ empty map" : "Waiting for remote state…";
     row.append(cell);
     target.append(row);
   }
@@ -351,8 +401,8 @@ document.querySelectorAll("[data-clear]").forEach((button) => button.addEventLis
 document.querySelectorAll("[data-replace]").forEach((button) => button.addEventListener("click", () => send({op: "replace", node: button.dataset.replace, items: ["fern", "moss"]})));
 $("weight-form").addEventListener("submit", (event) => { event.preventDefault(); send({op: "set", node: "weight", value: Number($("weight").value)}); });
 $("label-form").addEventListener("submit", (event) => { event.preventDefault(); send({op: "set", node: "label", value: $("label").value}); });
-$("reset").addEventListener("click", () => send({op: "reset"}));
 $("clear-log").addEventListener("click", () => $("activity-log").replaceChildren());
+$("clear-peer-log").addEventListener("click", () => $("peer-log").replaceChildren());
 $("connection-toggle").addEventListener("click", () => {
   paused = !paused;
   clearTimeout(reconnectTimer);

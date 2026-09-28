@@ -43,7 +43,8 @@
 // closures. Unsubscribe releases now-unused derived values and operator caches;
 // ordinary authoritative leaves and registered definitions remain. Read temporarily
 // activates a closure, returning an immutable snapshot without a lasting watch.
-// SubscribeMap and SubscribeStruct atomically activate and snapshot their output.
+// SubscribeSnapshot, SubscribeMap, and SubscribeStruct atomically snapshot and
+// subscribe to an output, so changes cannot fall between reading and watching.
 // Reconnecting rebuilds released caches from current leaves. Stats exposes
 // constant-time lifetime and evaluation counters.
 // Reconfigure changes a function instance's inputs and compute factory inside
@@ -74,4 +75,12 @@
 // collection contents. Use MapFieldChanges and SetFieldChanges on the composed
 // batch rather than comparing its endpoint collections. See the SubscribeStruct
 // example for an incremental stream-encoding boundary.
+//
+// # Experimental remote watches
+//
+// Package [github.com/bradfitz/reco/metagraph] connects explicit remote mirrors
+// and authoritative exports using multiplexed bidirectional WebSockets. The core
+// Graph remains local and synchronous. Remote-watch ownership and lifetime are
+// currently application-managed, not automatically resolved through a Locator.
+// See cmd/webdemo for a two-process example and the current limitations.
 package reco

@@ -15,13 +15,12 @@
     <div class="connection"><span id="status" role="status" data-state="offline">Connecting…</span><button id="connection-toggle" type="button">Disconnect</button></div>
   </header>
   <main>
-    <section class="intro">
-      <div><p class="eyebrow">EDIT A LEAF. WATCH THE GRAPH.</p><h1>Small changes.<br><span>Connected consequences.</span></h1>
-        <p class="lede">Two sets of words, a few pure functions, and a shared graph.<br>Change an input. The server computes; your browser watches.</p>
-      </div>
-      <aside class="experiment"><span class="eyebrow">TRY THIS FIRST</span><p>Remove <code>cedar</code> from set A.<br>It stays in the union because B still contains it.</p><p class="muted">Open a second tab to watch the same graph together.</p><button id="reset" class="quiet" type="button" data-edit disabled>↺ Reset example</button></aside>
+    <div class="toolbar"><span id="graph-mode"><span class="live-dot"></span> One process <span class="divider">/</span> One shared graph <span class="divider">/</span> In memory</span><span id="revision">Waiting for a snapshot</span></div>
+    <section id="peer-panel" class="peer-panel" aria-label="Metagraph connection" hidden>
+      <div><span class="eyebrow" id="peer-title"></span><p id="peer-status" role="status">Waiting for the peer…</p><a id="peer-link" target="_blank" rel="noopener">Open the other process ↗</a></div>
+      <p>Each process owns two leaves and computes every function locally. Only owned leaves are editable here. One bidirectional WebSocket carries all peer watches and deltas. Transactions are atomic locally; cross-process delivery is atomic per leaf and eventually consistent.</p>
     </section>
-    <div class="toolbar"><span><span class="live-dot"></span> One process <span class="divider">/</span> One shared graph <span class="divider">/</span> In memory</span><span id="revision">Waiting for a snapshot</span></div>
+    <p id="peer-stale" class="stale" hidden></p>
     <section class="tx-bar" aria-label="Transaction controls">
       <div class="tx-buttons"><button id="tx-start" type="button" disabled>Start Tx</button><button id="tx-rollback" type="button" disabled>Rollback Tx</button><button id="tx-commit" type="button" disabled>Commit Tx</button></div>
       <p id="tx-status" role="status">Auto-commit: each edit is one transaction.</p>
@@ -60,7 +59,8 @@
       </section>
     </div>
     <section class="activity"><div class="activity-heading"><h2>On the wire <span>LIVE WEBSOCKET ACTIVITY</span></h2><button id="clear-log" type="button" class="quiet">Clear log</button></div><ol id="activity-log" aria-label="Recent WebSocket activity"></ol><details><summary>Inspect the last graph message</summary><pre id="wire-message">No messages yet.</pre></details></section>
-    <footer class="page-footer"><span>reco / an observable little world</span><span>Experimental UI protocol · no peers, Locators, or durable storage</span></footer>
+    <section id="peer-activity" class="activity" hidden><div class="activity-heading"><h2>Between processes <span>MULTIPLEXED PEER WEBSOCKET</span></h2><button id="clear-peer-log" type="button" class="quiet">Clear log</button></div><ol id="peer-log" aria-label="Recent peer messages"></ol><details open><summary>Inspect the last peer message</summary><pre id="peer-wire">Waiting for peer traffic…</pre></details></section>
+    <footer class="page-footer"><span>reco / an observable little world</span><span>Experimental protocols · static ownership · no durable storage</span></footer>
   </main>
 </body>
 </html>

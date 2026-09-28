@@ -80,20 +80,30 @@ func (s *subscription) Unsubscribe() error {
 // event. In demand-driven mode it keeps the dependency closure active until
 // Unsubscribe. Callbacks run under the graph lock and must not reenter it.
 func Subscribe[T any](g *Graph, node Node[T], opts SubscribeOptions, fn func(Event[T])) (SubscriptionHandle, error) {
+	_, sub, err := SubscribeSnapshot(g, node, opts, fn)
+	return sub, err
+}
+
+// SubscribeSnapshot atomically reads node and installs a watch for subsequent
+// changes. Unlike a separate Read followed by Subscribe, no update can fall in
+// between. The callback may run as soon as this function releases the graph
+// lock, including before the caller has processed the returned snapshot.
+// Callbacks run under that lock and must not reenter the graph or do network I/O.
+func SubscribeSnapshot[T any](g *Graph, node Node[T], opts SubscribeOptions, fn func(Event[T])) (Snapshot[T], SubscriptionHandle, error) {
 	if fn == nil {
-		return nil, fmt.Errorf("reco: nil subscriber")
+		return Snapshot[T]{}, nil, fmt.Errorf("reco: nil subscriber")
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
 	if node.def == nil {
-		return nil, fmt.Errorf("reco: zero node handle")
+		return Snapshot[T]{}, nil, fmt.Errorf("reco: zero node handle")
 	}
 	if _, ok := g.nodes[node.def]; !ok {
-		return nil, fmt.Errorf("reco: node %s is not registered", node.def.className)
+		return Snapshot[T]{}, nil, fmt.Errorf("reco: node %s is not registered", node.def.className)
 	}
 	if err := g.observeLocked(node.def); err != nil {
-		return nil, err
+		return Snapshot[T]{}, nil, err
 	}
 	g.subCount++
 	g.nextSub++
@@ -102,7 +112,7 @@ func Subscribe[T any](g *Graph, node Node[T], opts SubscribeOptions, fn func(Eve
 		g.subs[node.def] = make(map[uint64]subscriber)
 	}
 	g.subs[node.def][id] = typedSubscriber[T]{fn: fn}
-	return &subscription{g: g, def: node.def, id: id}, nil
+	return snapshotFromNodeValue[T](g.nodes[node.def]), &subscription{g: g, def: node.def, id: id}, nil
 }
 
 // SubscribeMap atomically returns the current snapshot and subscribes fn to

@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/bradfitz/reco"
+	"github.com/bradfitz/reco/metagraph"
 	"github.com/bradfitz/reco/nodes"
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
@@ -50,11 +51,14 @@ type mapPatch struct {
 }
 
 type message struct {
-	Type     string       `json:"type"`
-	Revision uint64       `json:"revision"`
-	Nodes    []nodeUpdate `json:"nodes,omitempty"`
-	Error    string       `json:"error,omitempty"`
-	Request  uint64       `json:"request,omitempty"`
+	Type     string            `json:"type"`
+	Revision uint64            `json:"revision"`
+	Nodes    []nodeUpdate      `json:"nodes,omitempty"`
+	Error    string            `json:"error,omitempty"`
+	Request  uint64            `json:"request,omitempty"`
+	Info     *demoInfo         `json:"info,omitempty"`
+	Peer     *metagraph.Status `json:"peer,omitempty"`
+	Wire     *wireEvent        `json:"wire,omitempty"`
 }
 
 type command struct {
@@ -85,13 +89,23 @@ type demo struct {
 	revision uint64
 	clients  map[*client]bool
 	handler  http.Handler
+	peer     *metagraph.Peer
+	info     *demoInfo
+	watches  []*metagraph.Watch
 }
 
 func newDemo() (*demo, error) {
+	return newDemoWithOptions(demoOptions{})
+}
+
+func newDemoWithOptions(opts demoOptions) (*demo, error) {
 	d := &demo{
 		g: reco.NewGraph(), a: reco.SetData[string]("a"), b: reco.SetData[string]("b"),
 		label: reco.Data[string]("label"), weight: reco.Data[int]("weight"),
 		latest: make(map[string]func() nodeUpdate), clients: make(map[*client]bool),
+	}
+	if err := d.configurePeer(opts); err != nil {
+		return nil, err
 	}
 	union := nodes.Union("union", d.a, d.b)
 	details := nodes.MapSet("details", union, func(k string) word {
@@ -177,6 +191,9 @@ func newDemo() (*demo, error) {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /ws", d.socket)
+	if d.peer != nil {
+		mux.Handle("GET /peer", d.peer)
+	}
 	mux.Handle("GET /", http.FileServer(http.FS(static)))
 	d.handler = mux
 	return d, nil
@@ -192,7 +209,12 @@ func watch[T any](d *demo, n reco.Node[T], full func(T) any, patch func(T, T) no
 		d.latest[string(n.ClassName())] = func() nodeUpdate {
 			return nodeUpdate{ID: string(n.ClassName()), Version: ev.Version, Value: full(cur)}
 		}
-		u := patch(ev.Previous.Value(), cur)
+		var u nodeUpdate
+		if !ev.Previous.Valid() {
+			u.Value = full(cur)
+		} else {
+			u = patch(ev.Previous.Value(), cur)
+		}
 		u.ID, u.Version = string(n.ClassName()), ev.Version
 		d.pending = append(d.pending, u)
 	})
@@ -210,12 +232,22 @@ func (d *demo) seed(tx *reco.Tx) error {
 	// Initialize empty collections explicitly; a node with no value is not
 	// the same as an initialized empty set.
 	for _, n := range []reco.Node[reco.SetSnapshot[string]]{d.a, d.b} {
-		reco.Set(tx, n, reco.SetSnapshot[string]{})
+		if d.owns(string(n.ClassName())) {
+			reco.Set(tx, n, reco.SetSnapshot[string]{})
+		}
 	}
-	reco.ApplySetDelta(tx, d.a, reco.SetDelta[string]{Add: []string{"amber", "birch", "cedar"}})
-	reco.ApplySetDelta(tx, d.b, reco.SetDelta[string]{Add: []string{"cedar", "dune"}})
-	reco.Set(tx, d.label, "Word garden")
-	reco.Set(tx, d.weight, 3)
+	if d.owns("a") {
+		reco.ApplySetDelta(tx, d.a, reco.SetDelta[string]{Add: []string{"amber", "birch", "cedar"}})
+	}
+	if d.owns("b") {
+		reco.ApplySetDelta(tx, d.b, reco.SetDelta[string]{Add: []string{"cedar", "dune"}})
+	}
+	if d.owns("label") {
+		reco.Set(tx, d.label, "Word garden")
+	}
+	if d.owns("weight") {
+		reco.Set(tx, d.weight, 3)
+	}
 	return nil
 }
 
@@ -228,6 +260,11 @@ func (d *demo) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (d *demo) snapshot() message {
 	m := message{Type: "snapshot", Revision: d.revision}
+	m.Info = d.info
+	if d.peer != nil {
+		st := d.peer.Status()
+		m.Peer = &st
+	}
 	for _, get := range d.latest {
 		m.Nodes = append(m.Nodes, get())
 	}
@@ -338,6 +375,12 @@ func (d *demo) apply(cmd command) error {
 	}); err != nil {
 		return err
 	}
+	return d.publish()
+}
+
+// publish runs under mu after one local graph transaction (including a remote
+// leaf delivery). Browser revisions are local; they are not metagraph versions.
+func (d *demo) publish() error {
 	d.revision++
 	slices.SortFunc(d.pending, func(a, b nodeUpdate) int { return strings.Compare(a.ID, b.ID) })
 	data, err := json.Marshal(message{Type: "update", Revision: d.revision, Nodes: d.pending})
@@ -389,6 +432,9 @@ func (s *setDraft) apply(d reco.SetDelta[string]) error {
 }
 
 func (d *demo) mutate(tx *reco.Tx, cmd command, drafts map[string]*setDraft) error {
+	if cmd.Op != "reset" && !d.owns(cmd.Node) {
+		return fmt.Errorf("%s is owned by process %s; edit it there", cmd.Node, d.info.Owners[cmd.Node])
+	}
 	var mutate func(*reco.Tx) error
 	switch cmd.Op {
 	case "set":
@@ -447,6 +493,32 @@ func (d *demo) mutate(tx *reco.Tx, cmd command, drafts map[string]*setDraft) err
 		}
 		mutate = func(tx *reco.Tx) error { reco.ApplySetDelta(tx, n, delta); return nil }
 	case "reset":
+		if d.peer != nil {
+			// Reset only this process's authority, with normal delta semantics.
+			for _, id := range []string{"a", "b"} {
+				if !d.owns(id) {
+					continue
+				}
+				items := []string{"amber", "birch", "cedar"}
+				n := d.a
+				if id == "b" {
+					items = []string{"cedar", "dune"}
+					n = d.b
+				}
+				delta := reco.SetDelta[string]{Clear: true, Add: items}
+				if err := drafts[id].apply(delta); err != nil {
+					return err
+				}
+				reco.ApplySetDelta(tx, n, delta)
+			}
+			if d.owns("label") {
+				reco.Set(tx, d.label, "Word garden")
+			}
+			if d.owns("weight") {
+				reco.Set(tx, d.weight, 3)
+			}
+			return nil
+		}
 		if err := drafts["a"].apply(reco.SetDelta[string]{Clear: true, Add: []string{"amber", "birch", "cedar"}}); err != nil {
 			return err
 		}

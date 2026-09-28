@@ -4,6 +4,13 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { chromium } = require("playwright");
 
+// Reset test state through the demo protocol; there is no reset control in the UI.
+async function resetFixture(page) {
+  const before = await page.locator("#revision").textContent();
+  assert.equal(await page.evaluate(() => send({op: "reset"})), true);
+  await page.waitForFunction((before) => document.getElementById("revision").textContent !== before, before);
+}
+
 test("browser edits, deltas, cross-tab watches, and reconnect", async () => {
   assert.ok(process.env.WEBDEMO_URL, "set WEBDEMO_URL to an isolated test server");
   const browser = await chromium.launch({
@@ -20,8 +27,9 @@ test("browser edits, deltas, cross-tab watches, and reconnect", async () => {
       page.on("console", (msg) => { if (msg.type() === "error") errors.push(msg.text()); });
       await page.goto(process.env.WEBDEMO_URL);
       await page.waitForFunction(() => document.getElementById("status").textContent === "Live");
+      assert.equal(await page.locator(".intro, .experiment, #reset").count(), 0);
     }
-    await a.locator("#reset").click();
+    await resetFixture(a);
     await a.waitForFunction(() => document.getElementById("value-totalRunes").textContent === "19");
 
     // Same number of unique words, different rune total and score.
@@ -29,7 +37,7 @@ test("browser edits, deltas, cross-tab watches, and reconnect", async () => {
     await a.waitForFunction(() => document.getElementById("value-totalRunes").textContent === "17");
     assert.equal(await a.locator("#value-union .chip").count(), 4);
     assert.equal(await a.locator("#value-score").textContent(), "51");
-    await a.locator("#reset").click();
+    await resetFixture(a);
     await a.waitForFunction(() => document.getElementById("value-totalRunes").textContent === "19");
 
     // Regression: form.elements.item is a method, not the input named "item".
@@ -130,7 +138,7 @@ test("browser edits, deltas, cross-tab watches, and reconnect", async () => {
     assert.equal(await a.locator("#node-label.dep-highlight").count(), 1);
     assert.equal(await a.locator('#edges path.dep-highlight[data-from="label"][data-to="summary"]').count(), 1);
     assert.equal(await a.locator("#edges path.dep-highlight").count(), 1);
-    await a.locator("h1").hover();
+    await a.locator(".brand").hover();
     assert.equal(await a.locator(".dep-highlight").count(), 0);
 
     // A disconnected draft is discarded, never silently replayed on reconnect.
@@ -172,7 +180,7 @@ test("browser edits, deltas, cross-tab watches, and reconnect", async () => {
     await a.setViewportSize({ width: 390, height: 844 });
     assert.equal(await a.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
     assert.deepEqual(errors, []);
-    await a.locator("#reset").click();
+    await resetFixture(a);
     await a.waitForFunction(() => document.getElementById("value-summary").textContent === "Word garden · 19 runes · 57 points");
   } finally {
     await browser.close();
