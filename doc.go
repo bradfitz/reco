@@ -41,11 +41,29 @@
 // NewGraph keeps registered functions eager. NewGraphWithOptions with
 // GraphOptions.DemandDriven enabled computes only subscribed dependency
 // closures. Unsubscribe releases now-unused derived values and operator caches;
-// authoritative leaves and registered definitions remain. Read temporarily
+// ordinary authoritative leaves and registered definitions remain. Read temporarily
 // activates a closure, returning an immutable snapshot without a lasting watch.
 // SubscribeMap and SubscribeStruct atomically activate and snapshot their output.
 // Reconnecting rebuilds released caches from current leaves. Stats exposes
 // constant-time lifetime and evaluation counters.
+// Reconfigure changes a function instance's inputs and compute factory inside
+// a transaction while retaining its handle and subscribers. It requires a
+// demand-driven graph and already-registered, lower-rank inputs. Newly needed
+// inputs load before commit; abort releases temporary demand. Shared definitions
+// in other graph instances remain unchanged.
+//
+// BindDurable optionally binds a registered data node to an application-supplied
+// loader. Its value is cached only while observed, and reloaded when demand
+// returns. This works for scalars, sets, maps, records, and custom immutable
+// values. Read/Subscribe return load errors without retaining partial demand.
+// Set and collection mutation helpers reject these externally owned leaves.
+// Commit backing storage inside Graph.Update, then use UpdateDurable to patch
+// the resident cache; cold publications need neither loading nor computation.
+// ReadCached probes residency without loading. Storage itself is application
+// code: reco neither writes a database nor undoes an external commit.
+// Loaders run synchronously under the graph lock and must not reenter it.
+// Returned snapshots and loader closures can retain values independently;
+// avoid capturing a full initial snapshot in a loader intended to save memory.
 //
 // # Typed records
 //

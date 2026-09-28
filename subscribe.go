@@ -92,7 +92,9 @@ func Subscribe[T any](g *Graph, node Node[T], opts SubscribeOptions, fn func(Eve
 	if _, ok := g.nodes[node.def]; !ok {
 		return nil, fmt.Errorf("reco: node %s is not registered", node.def.className)
 	}
-	g.observeLocked(node.def)
+	if err := g.observeLocked(node.def); err != nil {
+		return nil, err
+	}
 	g.subCount++
 	g.nextSub++
 	id := g.nextSub
@@ -120,7 +122,9 @@ func SubscribeMap[K comparable, V any](g *Graph, node Node[MapSnapshot[K, V]], o
 	if !ok {
 		return Snapshot[MapSnapshot[K, V]]{}, nil, fmt.Errorf("reco: node %s is not registered", node.def.className)
 	}
-	g.observeLocked(node.def)
+	if err := g.observeLocked(node.def); err != nil {
+		return Snapshot[MapSnapshot[K, V]]{}, nil, err
+	}
 	cur := g.nodes[node.def]
 	g.subCount++
 	g.nextSub++

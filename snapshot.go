@@ -48,7 +48,9 @@ func Read[T any](g *Graph, node Node[T]) (Snapshot[T], error) {
 	if !ok {
 		return Snapshot[T]{}, fmt.Errorf("reco: node %s is not registered", node.def.className)
 	}
-	g.observeLocked(node.def)
+	if err := g.observeLocked(node.def); err != nil {
+		return Snapshot[T]{}, err
+	}
 	defer g.releaseLocked(node.def)
 	return snapshotFromNodeValue[T](g.nodes[node.def]), nil
 }

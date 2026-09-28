@@ -4,17 +4,28 @@ import "fmt"
 
 // Tx is a serialized per-graph transaction.
 type Tx struct {
-	g      *Graph
-	writes map[*nodeDef]any
+	g       *Graph
+	writes  map[*nodeDef]any
+	err     error
+	configs map[*nodeDef]*nodeDef
+	holds   []*nodeDef
 }
 
-// Set assigns a scalar data node within a transaction.
+// Set assigns a data node within a transaction. For externally owned leaves
+// bound with BindDurable, use UpdateDurable; Set makes the transaction fail.
 func Set[T any](tx *Tx, node Node[T], value T) {
 	tx.mustData(node.def)
 	tx.writes[node.def] = value
 }
 
 func (tx *Tx) mustData(def *nodeDef) {
+	tx.checkData(def)
+	if tx.g.loaders[def] != nil {
+		tx.err = fmt.Errorf("reco: use UpdateDurable to publish persisted changes to %s", def.className)
+	}
+}
+
+func (tx *Tx) checkData(def *nodeDef) {
 	if def == nil {
 		panic("reco: zero node handle")
 	}

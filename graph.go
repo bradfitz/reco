@@ -16,11 +16,14 @@ type Graph struct {
 	nextSub                 uint64
 	version                 Version
 	funcs                   map[*nodeDef]*funcState
+	configs                 map[*nodeDef]*nodeDef // per-instance input/factory overrides
 	rank                    map[*nodeDef]int
 	users                   map[*nodeDef]map[*nodeDef]bool // active consumers only in demand mode
 	initial                 []*nodeDef                     // newly registered functions, evaluated on the next update
 	demand                  bool
-	refs                    map[*nodeDef]int // subscriptions and active consumers of functions
+	refs                    map[*nodeDef]int // demand for functions and durable leaves
+	loaders                 map[*nodeDef]func() (any, error)
+	cachedDurable           int
 	functionCount, subCount int
 	evaluations             uint64
 }
@@ -35,7 +38,8 @@ type GraphOptions struct {
 	// DemandDriven evaluates only functions reachable from subscriptions.
 	// Read evaluates on demand without retaining a watch. When the last
 	// observer goes away, derived values and operator caches are released.
-	// Registered definitions and authoritative data values remain available.
+	// Registered definitions and ordinary data values remain available.
+	// BindDurable permits reloadable data values to be released too.
 	DemandDriven bool
 }
 
@@ -54,14 +58,16 @@ func NewGraph() *Graph {
 // NewGraphWithOptions creates a graph with the specified evaluation lifetime.
 func NewGraphWithOptions(opts GraphOptions) *Graph {
 	return &Graph{
-		nodes:  make(map[*nodeDef]nodeValue),
-		defs:   make(map[nodeName]*nodeDef),
-		subs:   make(map[*nodeDef]map[uint64]subscriber),
-		funcs:  make(map[*nodeDef]*funcState),
-		rank:   make(map[*nodeDef]int),
-		users:  make(map[*nodeDef]map[*nodeDef]bool),
-		refs:   make(map[*nodeDef]int),
-		demand: opts.DemandDriven,
+		nodes:   make(map[*nodeDef]nodeValue),
+		defs:    make(map[nodeName]*nodeDef),
+		subs:    make(map[*nodeDef]map[uint64]subscriber),
+		funcs:   make(map[*nodeDef]*funcState),
+		configs: make(map[*nodeDef]*nodeDef),
+		rank:    make(map[*nodeDef]int),
+		users:   make(map[*nodeDef]map[*nodeDef]bool),
+		refs:    make(map[*nodeDef]int),
+		loaders: make(map[*nodeDef]func() (any, error)),
+		demand:  opts.DemandDriven,
 	}
 }
 
@@ -148,18 +154,29 @@ func (g *Graph) Update(fn func(*Tx) error) error {
 	defer g.mu.Unlock()
 
 	tx := &Tx{g: g, writes: make(map[*nodeDef]any)}
+	defer tx.releaseHolds()
 	if err := fn(tx); err != nil {
 		return err
+	}
+	if tx.err != nil {
+		return tx.err
 	}
 	// Keep only changed nodes' old values. Neither committing a point update
 	// nor notifying its subscribers should scan/copy the whole node registry.
 	before := make(map[*nodeDef]nodeValue)
 	dirty := &dirtyQueue{rank: g.rank, scheduled: make(map[*nodeDef]bool)}
+	tx.applyConfigs(dirty)
 	for _, def := range g.initial {
 		dirty.add(def)
 	}
 	g.initial = nil
 	for def, v := range tx.writes {
+		// Rebinding a function may have removed the last consumer after a
+		// durable cache edit was staged. Its backing store is authoritative;
+		// do not resurrect the evicted value just to publish an unwatched write.
+		if g.loaders[def] != nil && g.refs[def] == 0 {
+			continue
+		}
 		prev := g.nodes[def]
 		if normalizer, ok := v.(interface{ recoNormalize(any) any }); ok {
 			v = normalizer.recoNormalize(prev.value)
@@ -186,16 +203,17 @@ func (g *Graph) recompute(before map[*nodeDef]nodeValue, dirty *dirtyQueue) {
 	// transaction. Diamond joins see all changed branches together.
 	for dirty.Len() != 0 {
 		def := heap.Pop(dirty).(*nodeDef)
+		binding := g.definition(def)
 		state := g.funcs[def]
 		if state == nil {
-			state = &funcState{compute: def.compute}
-			if def.newCompute != nil {
-				state.compute = def.newCompute()
+			state = &funcState{compute: binding.compute}
+			if binding.newCompute != nil {
+				state.compute = binding.newCompute()
 			}
 			g.funcs[def] = state
 		}
 		ready, needsCompute := true, !state.ran
-		for _, dep := range def.deps {
+		for _, dep := range binding.deps {
 			v := g.nodes[dep.node]
 			ready = ready && v.valid
 			needsCompute = needsCompute || v.version > state.seen
@@ -203,8 +221,8 @@ func (g *Graph) recompute(before map[*nodeDef]nodeValue, dirty *dirtyQueue) {
 		if !ready || !needsCompute {
 			continue
 		}
-		depVals := make(map[*nodeDef]nodeValue, len(def.deps))
-		for _, dep := range def.deps {
+		depVals := make(map[*nodeDef]nodeValue, len(binding.deps))
+		for _, dep := range binding.deps {
 			depVals[dep.node] = g.nodes[dep.node]
 		}
 		next := state.compute(Eval{graph: g, inputs: depVals}, depVals)

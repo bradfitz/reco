@@ -38,7 +38,9 @@ func SubscribeStruct[T any](g *Graph, node Node[StructSnapshot[T]], opts Subscri
 	if !ok {
 		return Snapshot[StructSnapshot[T]]{}, nil, fmt.Errorf("reco: node %s is not registered", node.ClassName())
 	}
-	g.observeLocked(node.def)
+	if err := g.observeLocked(node.def); err != nil {
+		return Snapshot[StructSnapshot[T]]{}, nil, err
+	}
 	cur := g.nodes[node.def]
 	g.subCount++
 	g.nextSub++
