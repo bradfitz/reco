@@ -11,14 +11,17 @@ import "fmt"
 // There is no required namespace or path syntax. The zero value is invalid for
 // a definition, but is returned by ClassName on a zero Node handle.
 //
-// Within a Graph, all registered definitions, including dependencies, must have
-// distinct names regardless of their value types or constructors. Registering
+// Within a Graph and Scope, all definitions, including dependencies, must have
+// distinct names regardless of their value types or constructors. Unscoped
+// definitions share the graph's default namespace. Registering
 // the same definition again is allowed; separately constructed definitions with
 // the same name are an error, not aliases. Definitions and names can be reused
-// across independent graphs; names are not globally unique.
+// across independent graphs or instantiated with In in multiple scopes;
+// names are not globally unique.
 //
 // A class name is not a collection key or a key selecting an instance of a
-// class. Generic keyed instances and remote addressing are not yet implemented;
+// class. Scope provides local instances; generic keyed resolution and remote
+// addressing are not yet implemented;
 // this type does not define a distributed address or versioning scheme.
 type NodeClassName string
 
@@ -97,11 +100,12 @@ const (
 )
 
 type nodeDef struct {
+	scope     *Scope
 	className NodeClassName
 	kind      nodeKind
 	deps      []depBinding
 	compute   computeFunc
-	// newCompute creates graph-local incremental state for Operator nodes.
+	// newCompute creates instance-local incremental state for Operator nodes.
 	newCompute func() computeFunc
 	valueTyp   typeID
 }

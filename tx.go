@@ -21,6 +21,9 @@ func (tx *Tx) mustData(def *nodeDef) {
 	if def.kind != nodeData {
 		panic(fmt.Sprintf("reco: node %s is not a data node", def.className))
 	}
+	if _, ok := tx.g.nodes[def]; !ok {
+		panic(fmt.Sprintf("reco: node %s is not registered", def.className))
+	}
 }
 
 func (tx *Tx) current(def *nodeDef) nodeValue {

@@ -10,12 +10,14 @@ type Dependency interface {
 }
 
 // Compute evaluates an operator using its declared inputs. Its closure may
-// retain graph-local incremental caches, but must not mutate published values.
+// retain instance-local incremental caches, but must not mutate published values.
 // The result must depend only on the inputs, not on the cache's history.
 type Compute[T any] func(Eval) Result[T]
 
 // Operator declares a reusable incremental node. newCompute is called lazily,
-// once per graph instance, to create that instance's compute function and state.
+// per graph/node instance, to create its compute function and state. In demand-
+// driven graphs, the state is discarded when last demand disappears and the
+// factory runs again on reactivation. Caches must be rebuildable from inputs.
 // Allocate mutable caches INSIDE newCompute, not in the shared definition.
 // A factory must return a non-nil function. It can run concurrently with
 // factories/computations in other graphs; calls within one graph are serialized.

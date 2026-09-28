@@ -16,9 +16,11 @@
 // Graph.Update applies a transaction, recomputes affected nodes in dependency
 // order, and delivers subscription events after the graph has settled.
 // Node definitions can be reused across independent Graph instances.
+// Scope and In instantiate the same definitions independently within one graph;
+// explicitly scoped inputs allow dependencies across scopes.
 //
 // Each definition has a NodeClassName, supplied to its constructor and returned
-// by Node.ClassName. Class names must be unique within a graph, including its
+// by Node.ClassName. Class names must be unique within a graph/scope, including its
 // dependencies; they are distinct from collection keys and future instance keys.
 //
 // # Incremental operators
@@ -26,13 +28,24 @@
 // Package [github.com/bradfitz/reco/nodes] provides reusable incremental nodes,
 // including set union and set-to-map computation. Packages can implement their own
 // operators using Operator and Input.
-// Allocate incremental caches inside the operator's per-graph compute factory.
+// Allocate incremental caches inside the operator's per-instance compute factory.
 // Consume collection changes with ChangesSince and publish one WithDelta batch
 // per evaluation to preserve the incremental fast path. See the Operator example.
 //
 // Published values must be immutable. SetSnapshot and MapSnapshot provide
 // structurally shared storage, native Go iterators, and atomic delta application.
 // Custom immutable types may implement ValueEqualer and VersionedValue.
+//
+// # Demand-driven lifetimes
+//
+// NewGraph keeps registered functions eager. NewGraphWithOptions with
+// GraphOptions.DemandDriven enabled computes only subscribed dependency
+// closures. Unsubscribe releases now-unused derived values and operator caches;
+// authoritative leaves and registered definitions remain. Read temporarily
+// activates a closure, returning an immutable snapshot without a lasting watch.
+// SubscribeMap and SubscribeStruct atomically activate and snapshot their output.
+// Reconnecting rebuilds released caches from current leaves. Stats exposes
+// constant-time lifetime and evaluation counters.
 //
 // # Typed records
 //

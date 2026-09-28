@@ -4,23 +4,39 @@ import (
 	"container/heap"
 	"fmt"
 	"reflect"
-	"slices"
 	"sync"
 )
 
 // Graph is an independent reactive dataflow graph instance.
 type Graph struct {
-	mu      sync.Mutex
-	nodes   map[*nodeDef]nodeValue
-	defs    map[NodeClassName]*nodeDef
-	subs    map[*nodeDef]map[uint64]subscriber
-	nextSub uint64
-	version Version
-	order   []*nodeDef // dependencies before consumers
-	funcs   map[*nodeDef]*funcState
-	rank    map[*nodeDef]int
-	users   map[*nodeDef][]*nodeDef
-	initial []*nodeDef // newly registered functions, evaluated on the next update
+	mu                      sync.Mutex
+	nodes                   map[*nodeDef]nodeValue
+	defs                    map[nodeName]*nodeDef
+	subs                    map[*nodeDef]map[uint64]subscriber
+	nextSub                 uint64
+	version                 Version
+	funcs                   map[*nodeDef]*funcState
+	rank                    map[*nodeDef]int
+	users                   map[*nodeDef]map[*nodeDef]bool // active consumers only in demand mode
+	initial                 []*nodeDef                     // newly registered functions, evaluated on the next update
+	demand                  bool
+	refs                    map[*nodeDef]int // subscriptions and active consumers of functions
+	functionCount, subCount int
+	evaluations             uint64
+}
+
+type nodeName struct {
+	scope     *Scope
+	className NodeClassName
+}
+
+// GraphOptions configures evaluation lifetime.
+type GraphOptions struct {
+	// DemandDriven evaluates only functions reachable from subscriptions.
+	// Read evaluates on demand without retaining a watch. When the last
+	// observer goes away, derived values and operator caches are released.
+	// Registered definitions and authoritative data values remain available.
+	DemandDriven bool
 }
 
 type funcState struct {
@@ -29,128 +45,104 @@ type funcState struct {
 	ran     bool
 }
 
-// NewGraph creates an empty graph instance.
+// NewGraph creates an empty, eager graph instance. See NewGraphWithOptions for
+// demand-driven evaluation and automatic cache release.
 func NewGraph() *Graph {
+	return NewGraphWithOptions(GraphOptions{})
+}
+
+// NewGraphWithOptions creates a graph with the specified evaluation lifetime.
+func NewGraphWithOptions(opts GraphOptions) *Graph {
 	return &Graph{
-		nodes: make(map[*nodeDef]nodeValue),
-		defs:  make(map[NodeClassName]*nodeDef),
-		subs:  make(map[*nodeDef]map[uint64]subscriber),
-		funcs: make(map[*nodeDef]*funcState),
+		nodes:  make(map[*nodeDef]nodeValue),
+		defs:   make(map[nodeName]*nodeDef),
+		subs:   make(map[*nodeDef]map[uint64]subscriber),
+		funcs:  make(map[*nodeDef]*funcState),
+		rank:   make(map[*nodeDef]int),
+		users:  make(map[*nodeDef]map[*nodeDef]bool),
+		refs:   make(map[*nodeDef]int),
+		demand: opts.DemandDriven,
 	}
 }
 
-// Register adds node definitions to the graph and validates class name uniqueness and
-// DAG structure.
+// Register atomically adds definitions and dependencies, validating class name
+// uniqueness within each Scope and DAG structure. Work is proportional to newly
+// registered definitions and their edges, not the existing graph's size.
 func (g *Graph) Register(nodes ...any) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-
-	for _, n := range nodes {
-		tn, err := nodeFromAny(n)
-		if err != nil {
-			return err
-		}
-		if existing := g.defs[tn.def.className]; existing != nil && existing != tn.def {
-			return fmt.Errorf("reco: duplicate node class name %q", tn.def.className)
-		}
-		g.defs[tn.def.className] = tn.def
-		if _, ok := g.nodes[tn.def]; !ok {
-			g.nodes[tn.def] = nodeValue{}
-		}
-	}
-	for _, n := range nodes {
-		tn, _ := nodeFromAny(n)
-		if err := g.registerDeps(tn.def, map[*nodeDef]bool{}); err != nil {
-			return err
-		}
-	}
-	return g.checkDAG()
-}
-
-func (g *Graph) registerDeps(def *nodeDef, seen map[*nodeDef]bool) error {
-	if seen[def] {
-		return nil
-	}
-	seen[def] = true
-	for _, dep := range def.deps {
-		if existing := g.defs[dep.node.className]; existing != nil && existing != dep.node {
-			return fmt.Errorf("reco: duplicate node class name %q", dep.node.className)
-		}
-		g.defs[dep.node.className] = dep.node
-		if _, ok := g.nodes[dep.node]; !ok {
-			g.nodes[dep.node] = nodeValue{}
-		}
-		if err := g.registerDeps(dep.node, seen); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (g *Graph) checkDAG() error {
-	const (
-		unseen = 0
-		active = 1
-		done   = 2
-	)
-	seen := map[*nodeDef]int{}
+	staged := make(map[nodeName]*nodeDef)
+	seen := make(map[*nodeDef]int)
 	var order []*nodeDef
 	var visit func(*nodeDef) error
 	visit = func(n *nodeDef) error {
-		switch seen[n] {
-		case active:
-			return fmt.Errorf("reco: cycle involving %s", n.className)
-		case done:
+		if _, ok := g.nodes[n]; ok {
 			return nil
 		}
-		seen[n] = active
+		switch seen[n] {
+		case 1:
+			return fmt.Errorf("reco: cycle involving %s", n.className)
+		case 2:
+			return nil
+		}
+		name := nodeName{n.scope, n.className}
+		if old := g.defs[name]; old != nil && old != n {
+			return fmt.Errorf("reco: duplicate node class name %q", n.className)
+		}
+		if old := staged[name]; old != nil && old != n {
+			return fmt.Errorf("reco: duplicate node class name %q", n.className)
+		}
+		staged[name], seen[n] = n, 1
 		for _, dep := range n.deps {
 			if err := visit(dep.node); err != nil {
 				return err
 			}
 		}
-		seen[n] = done
+		seen[n] = 2
 		order = append(order, n)
 		return nil
 	}
-	classNames := make([]NodeClassName, 0, len(g.defs))
-	for className := range g.defs {
-		classNames = append(classNames, className)
-	}
-	slices.Sort(classNames)
-	for _, className := range classNames {
-		n := g.defs[className]
-		if seen[n] == unseen {
-			if err := visit(n); err != nil {
-				return err
-			}
+	for _, n := range nodes {
+		tn, err := nodeFromAny(n)
+		if err != nil {
+			return err
+		}
+		if err := visit(tn.def); err != nil {
+			return err
 		}
 	}
-	g.order = order
-	g.rank = make(map[*nodeDef]int, len(order))
-	g.users = make(map[*nodeDef][]*nodeDef)
-	g.initial = nil
-	for i, def := range order {
-		g.rank[def] = i
+	for _, def := range order {
+		g.defs[nodeName{def.scope, def.className}] = def
+		g.nodes[def] = nodeValue{}
+		for _, dep := range def.deps {
+			g.rank[def] = max(g.rank[def], g.rank[dep.node]+1)
+		}
 		if def.kind != nodeFunc {
 			continue
 		}
-		if state := g.funcs[def]; state == nil || !state.ran {
-			g.initial = append(g.initial, def)
+		g.functionCount++
+		if g.demand {
+			continue
 		}
-		seenDeps := make(map[*nodeDef]bool)
+		g.initial = append(g.initial, def)
 		for _, dep := range def.deps {
-			if !seenDeps[dep.node] {
-				g.users[dep.node] = append(g.users[dep.node], def)
-				seenDeps[dep.node] = true
-			}
+			g.addUser(dep.node, def)
 		}
 	}
 	return nil
 }
 
-// Update runs one serialized transaction and then recomputes function nodes to
-// a fixed point before delivering subscription events.
+func (g *Graph) addUser(dep, user *nodeDef) {
+	if g.users[dep] == nil {
+		g.users[dep] = make(map[*nodeDef]bool)
+	}
+	g.users[dep][user] = true
+}
+
+// Update runs one serialized transaction and then recomputes affected active
+// functions to a fixed point before delivering subscription events. In eager
+// graphs all registered functions are active; demand-driven graphs activate
+// only subscribed dependency closures.
 func (g *Graph) Update(fn func(*Tx) error) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -180,7 +172,7 @@ func (g *Graph) Update(fn func(*Tx) error) error {
 		g.version++
 		v = valueWithVersion(v, g.version)
 		g.nodes[def] = nodeValue{value: v, version: g.version, valid: true}
-		for _, user := range g.users[def] {
+		for user := range g.users[def] {
 			dirty.add(user)
 		}
 	}
@@ -216,6 +208,7 @@ func (g *Graph) recompute(before map[*nodeDef]nodeValue, dirty *dirtyQueue) {
 			depVals[dep.node] = g.nodes[dep.node]
 		}
 		next := state.compute(Eval{graph: g, inputs: depVals}, depVals)
+		g.evaluations++
 		state.seen, state.ran = g.version, true
 		if !nodeValuesEqual(g.nodes[def], next) {
 			before[def] = g.nodes[def]
@@ -224,7 +217,7 @@ func (g *Graph) recompute(before map[*nodeDef]nodeValue, dirty *dirtyQueue) {
 			next.version = g.version
 			next.valid = true
 			g.nodes[def] = next
-			for _, user := range g.users[def] {
+			for user := range g.users[def] {
 				dirty.add(user)
 			}
 		}

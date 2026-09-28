@@ -34,7 +34,9 @@ func newSnapshot[T any](v T, version Version) Snapshot[T] {
 	return Snapshot[T]{value: v, version: version, valid: true}
 }
 
-// Read returns the latest value of a registered node.
+// Read returns the latest value of a registered node. In demand-driven mode it
+// temporarily observes its dependency closure and releases that demand before
+// returning; the returned immutable snapshot remains valid.
 func Read[T any](g *Graph, node Node[T]) (Snapshot[T], error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -42,11 +44,13 @@ func Read[T any](g *Graph, node Node[T]) (Snapshot[T], error) {
 	if node.def == nil {
 		return Snapshot[T]{}, fmt.Errorf("reco: zero node handle")
 	}
-	v, ok := g.nodes[node.def]
+	_, ok := g.nodes[node.def]
 	if !ok {
 		return Snapshot[T]{}, fmt.Errorf("reco: node %s is not registered", node.def.className)
 	}
-	return snapshotFromNodeValue[T](v), nil
+	g.observeLocked(node.def)
+	defer g.releaseLocked(node.def)
+	return snapshotFromNodeValue[T](g.nodes[node.def]), nil
 }
 
 // Event is delivered to subscribers when a node value changes.

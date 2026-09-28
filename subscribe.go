@@ -3,6 +3,7 @@ package reco
 import (
 	"fmt"
 	"slices"
+	"sync"
 )
 
 type subscriber interface {
@@ -50,24 +51,34 @@ func typedValue[T any](v any) T {
 }
 
 type subscription struct {
-	g    *Graph
-	def  *nodeDef
-	id   uint64
-	once bool
+	mu  sync.Mutex
+	g   *Graph
+	def *nodeDef
+	id  uint64
 }
 
 func (s *subscription) Unsubscribe() error {
-	s.g.mu.Lock()
-	defer s.g.mu.Unlock()
-	if s.once {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g := s.g
+	if g == nil {
 		return nil
 	}
-	s.once = true
-	delete(s.g.subs[s.def], s.id)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.subs[s.def], s.id)
+	if len(g.subs[s.def]) == 0 {
+		delete(g.subs, s.def)
+	}
+	g.subCount--
+	g.releaseLocked(s.def)
+	s.g, s.def = nil, nil // cancelled handles retain neither graph nor callbacks
 	return nil
 }
 
-// Subscribe registers a callback for node value changes.
+// Subscribe registers a callback for node value changes, without an initial
+// event. In demand-driven mode it keeps the dependency closure active until
+// Unsubscribe. Callbacks run under the graph lock and must not reenter it.
 func Subscribe[T any](g *Graph, node Node[T], opts SubscribeOptions, fn func(Event[T])) (SubscriptionHandle, error) {
 	if fn == nil {
 		return nil, fmt.Errorf("reco: nil subscriber")
@@ -81,6 +92,8 @@ func Subscribe[T any](g *Graph, node Node[T], opts SubscribeOptions, fn func(Eve
 	if _, ok := g.nodes[node.def]; !ok {
 		return nil, fmt.Errorf("reco: node %s is not registered", node.def.className)
 	}
+	g.observeLocked(node.def)
+	g.subCount++
 	g.nextSub++
 	id := g.nextSub
 	if g.subs[node.def] == nil {
@@ -103,10 +116,13 @@ func SubscribeMap[K comparable, V any](g *Graph, node Node[MapSnapshot[K, V]], o
 	if node.def == nil {
 		return Snapshot[MapSnapshot[K, V]]{}, nil, fmt.Errorf("reco: zero node handle")
 	}
-	cur, ok := g.nodes[node.def]
+	_, ok := g.nodes[node.def]
 	if !ok {
 		return Snapshot[MapSnapshot[K, V]]{}, nil, fmt.Errorf("reco: node %s is not registered", node.def.className)
 	}
+	g.observeLocked(node.def)
+	cur := g.nodes[node.def]
+	g.subCount++
 	g.nextSub++
 	id := g.nextSub
 	if g.subs[node.def] == nil {
