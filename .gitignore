@@ -1,7 +1,3 @@
-# Local session history and research based on private production sources.
-/chat.txt
-/control-nodes.md
-
 # Local multi-module experiments.
 /go.work
 /go.work.sum

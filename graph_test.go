@@ -82,14 +82,14 @@ func TestInlineDependencies(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := g.Update(func(tx *Tx) error {
-		Set(tx, name, "tailnet")
+		Set(tx, name, "graph")
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	got := g.nodes[greeting.def].value.(string)
-	if got != "hello tailnet" {
+	if got != "hello graph" {
 		t.Fatalf("greeting = %q", got)
 	}
 }

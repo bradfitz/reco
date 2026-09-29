@@ -11,7 +11,7 @@ Reco (reactive computation) explores typed, incremental dataflow graphs in Go.
 Declare mutable inputs and derived values; transactions update inputs, affected
 computations run, and subscribers receive changes. Persistent sets, maps, and
 typed records let incremental operators process small deltas without copying or
-rescanning entire collections. The current prototype is synchronous and
-in-process; distributed computation is a future design goal.
+rescanning entire collections. Local evaluation is synchronous; an experimental
+WebSocket transport connects explicitly bound graphs across processes.
 
 See [DESIGN.md](DESIGN.md) for details and open questions.
