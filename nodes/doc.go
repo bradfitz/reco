@@ -11,8 +11,8 @@
 // Union, Intersection, Xor, and Difference implement set algebra. MapSet
 // preserves set keys while computing a value for each added member. MapKeys
 // and MapValues project a map into a set of keys or distinct comparable values.
-// Point updates do work proportional to changed keys plus persistent storage
-// traversal and the number of declared inputs, rather than rebuilding collections.
+// Point updates visit only changed inputs and their changed keys, plus persistent
+// storage traversal, rather than scanning all inputs or rebuilding collections.
 // Initial snapshots, replacements, and clear operations may require enumeration.
 //
 // Map preserves map keys while transforming changed values. Index groups map

@@ -12,31 +12,46 @@ import (
 // Repeated inputs contribute repeatedly. Changes across inputs are combined
 // atomically; moving a contribution between inputs does not notify subscribers.
 // A count above MaxInt64 produces a Result error wrapping reco.ErrMultisetCount;
-// the operator recovers when later inputs have a representable sum. Work visits
-// input delta keys plus the fixed input list, not unchanged collection entries.
+// the operator recovers when later inputs have a representable sum. After
+// initialization, work visits only changed inputs and their delta keys, not the
+// whole input list or unchanged collection entries. Failed evaluations retain
+// unapplied inputs and retry them on later changes until the sum succeeds.
 func SumMultisets[K comparable](name reco.NodeClassName, inputs ...reco.Node[reco.MultisetSnapshot[K]]) reco.Node[reco.MultisetSnapshot[K]] {
 	if len(inputs) < 2 {
 		panic("nodes: SumMultisets needs at least two inputs")
 	}
-	inputs = append([]reco.Node[reco.MultisetSnapshot[K]](nil), inputs...)
-	deps := make([]reco.Dependency, len(inputs))
-	for i, n := range inputs {
-		deps[i] = n
-	}
+	deps, multiplicities := countInputs(inputs)
 	return reco.Operator(name, deps, func() reco.Compute[reco.MultisetSnapshot[K]] {
-		previous := make([]reco.MultisetSnapshot[K], len(inputs))
+		previous := make(map[reco.Node[reco.MultisetSnapshot[K]]]reco.MultisetSnapshot[K], len(multiplicities))
+		var pending map[reco.Node[reco.MultisetSnapshot[K]]]reco.MultisetSnapshot[K]
 		var out reco.MultisetSnapshot[K]
 		return func(e reco.Eval) reco.Result[reco.MultisetSnapshot[K]] {
-			current := make([]reco.MultisetSnapshot[K], len(inputs))
+			// Record ALL changed inputs before any error can return: ChangedInputs
+			// advances even on failure. Only a successful sum advances previous.
+			if pending == nil {
+				pending = make(map[reco.Node[reco.MultisetSnapshot[K]]]reco.MultisetSnapshot[K])
+			}
+			for dep := range e.ChangedInputs() {
+				pending[dep.(reco.Node[reco.MultisetSnapshot[K]])] = reco.MultisetSnapshot[K]{}
+			}
 			net := make(map[K]int64)
-			for i, n := range inputs {
+			for n := range pending {
 				dep := reco.Input(e, n)
 				if dep.Err() != nil {
 					return reco.Result[reco.MultisetSnapshot[K]]{Err: dep.Err()}
 				}
-				current[i] = dep.Value()
-				for c := range current[i].ChangesSince(previous[i]) {
+				cur := dep.Value()
+				pending[n] = cur
+				weight := int64(multiplicities[n])
+				for c := range cur.ChangesSince(previous[n]) {
 					diff := c.After - c.Before
+					// Counts are nonnegative, and the previous total fits int64.
+					// If the new total also fits, neither the positive nor negative
+					// contributions can exceed that range, in any iteration order.
+					if diff > math.MaxInt64/weight || diff < math.MinInt64/weight {
+						return reco.Result[reco.MultisetSnapshot[K]]{Err: fmt.Errorf("%w: summing %v", reco.ErrMultisetCount, c.Key)}
+					}
+					diff *= weight
 					v := net[c.Key]
 					if diff > 0 && v > math.MaxInt64-diff || diff < 0 && v < math.MinInt64-diff {
 						return reco.Result[reco.MultisetSnapshot[K]]{Err: fmt.Errorf("%w: summing %v", reco.ErrMultisetCount, c.Key)}
@@ -48,7 +63,13 @@ func SumMultisets[K comparable](name reco.NodeClassName, inputs ...reco.Node[rec
 			if err != nil {
 				return reco.Result[reco.MultisetSnapshot[K]]{Err: err}
 			}
-			out, previous = next, current
+			out = next
+			for n, cur := range pending {
+				previous[n] = cur
+			}
+			// Drop the table too: iterating a sparse table left over from initial
+			// activation or error recovery must not cost O(all inputs) per edit.
+			pending = nil
 			return reco.OK(out)
 		}
 	})
