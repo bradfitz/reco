@@ -8,6 +8,11 @@ server. Protocol, authentication, Noise, Tailnet Lock, and test-hook code was
 adapted from that revision, retaining its BSD-3-Clause notices. No private
 control-server implementation is used.
 
+This package is self-contained and in-memory: no persistent storage, browser
+administration, cross-network sharing, or identity-policy engine. It depends
+only on public reco APIs and the public Tailscale module. Clients must use
+capability version 109 or later.
+
 ## Data flow
 
 Each server has one fixed graph, independent of the number of HTTP streams:
@@ -48,7 +53,10 @@ omit. These operations are tested through JSON and the real control client,
 over Noise with compressed map responses.
 
 Session replacement and FIFO ping/raw-response injection remain HTTP concerns,
-not graph subscriptions. Disconnecting unregisters the subscription. Pending
+not graph subscriptions. Disconnecting unregisters the subscription even while
+a network writer is blocked. The graph is demand-driven: last unsubscribe
+releases unused derived values/caches, and reconnect rebuilds from current
+in-memory leaves. No unused computation keeps running after disconnect. Pending
 graph changes are bounded to 10,000 distinct changes; exceeding that closes the
 stream so a client can reconnect for a fresh snapshot. This is an entry-count
 bound, not a byte limit, and the explicit test-injection queue is not bounded.
@@ -68,7 +76,7 @@ here). With those build-tag changes in the Tailscale checkout:
 go work init . /path/to/tailscale.com
 export GOWORK="$PWD/go.work"
 cd /path/to/tailscale.com
-GOFLAGS=-tags=experiment.reco go test \
+GOFLAGS=-tags=experiment.reco go test -skip TestStreamingMapReqReadOnlyByVersion \
   ./tstest/integration/testcontrol ./control/tsp ./control/controlclient \
   ./tsnet ./tstest/integration ./feature/taildrop ./cmd/sniproxy \
   ./tsconsensus ./tstest/largetailnet ./tstest/membudget
@@ -84,6 +92,10 @@ In this repository, `GOWORK=off go test ./...` verifies the public pinned
 dependency independently of the workspace. Use `go test -race ./...` for
 concurrency checks and `go test ./recotestcontrol -bench=PeerDelta -run='^$'`
 for the incremental path benchmark.
+
+The skipped upstream test intentionally exercises obsolete capability versions
+67/68. Version-floor rejection, current-version streams, demand release, blocked
+writer cancellation, and peer patches have local regressions in this package.
 
 ## Deliberate limitations
 

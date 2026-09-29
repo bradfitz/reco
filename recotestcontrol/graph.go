@@ -65,7 +65,7 @@ func (s *Server) ensureGraphLocked() {
 	if s.graph != nil {
 		return
 	}
-	s.graph = reco.NewGraph()
+	s.graph = reco.NewGraphWithOptions(reco.GraphOptions{DemandDriven: true})
 	must.Do(s.graph.Register(metaNode))
 	must.Do(s.graph.Update(func(tx *reco.Tx) error {
 		reco.Set(tx, nodeData, s.nodes)

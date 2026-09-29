@@ -54,6 +54,9 @@ import (
 
 const msgLimit = 1 << 20 // encrypted message length limit
 
+// MinCapabilityVersion is the oldest supported client protocol version.
+const MinCapabilityVersion tailcfg.CapabilityVersion = 109
+
 // Server is a control plane server. Its zero value is ready for use.
 // Everything is stored in-memory in one tailnet.
 // Set public configuration fields before first use; use the setter methods
@@ -945,13 +948,16 @@ func (s *Server) serveRegister(w http.ResponseWriter, r *http.Request, mkey key.
 
 	var req tailcfg.RegisterRequest
 	if err := s.decode(msg, &req); err != nil {
-		go panic(fmt.Sprintf("serveRegister: decode: %v", err))
+		http.Error(w, "invalid register request", http.StatusBadRequest)
+		return
 	}
-	if req.Version == 0 {
-		panic("serveRegister: zero Version")
+	if req.Version < MinCapabilityVersion {
+		http.Error(w, "capability version 109 or later required", http.StatusBadRequest)
+		return
 	}
 	if req.NodeKey.IsZero() {
-		go panic("serveRegister: request has zero node key")
+		http.Error(w, "missing node key", http.StatusBadRequest)
+		return
 	}
 	if s.Verbose {
 		j, _ := json.MarshalIndent(req, "", "\t")
@@ -1335,7 +1341,12 @@ func (s *Server) serveMap(w http.ResponseWriter, r *http.Request, mkey key.Machi
 
 	req := new(tailcfg.MapRequest)
 	if err := s.decode(msg, req); err != nil {
-		go panic(fmt.Sprintf("bad map request: %v", err))
+		http.Error(w, "invalid map request", http.StatusBadRequest)
+		return
+	}
+	if req.Version < MinCapabilityVersion {
+		http.Error(w, "capability version 109 or later required", http.StatusBadRequest)
+		return
 	}
 
 	s.mu.Lock()

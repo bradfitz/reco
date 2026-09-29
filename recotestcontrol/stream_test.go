@@ -38,7 +38,7 @@ func readMapFrame(t *testing.T, r io.Reader) *tailcfg.MapResponse {
 
 func openMapStream(t *testing.T, ctx context.Context, url string, nk key.NodePublic) *http.Response {
 	t.Helper()
-	body := must.Get(json.Marshal(&tailcfg.MapRequest{NodeKey: nk, Version: 68, Stream: true}))
+	body := must.Get(json.Marshal(&tailcfg.MapRequest{NodeKey: nk, Version: MinCapabilityVersion, Stream: true}))
 	r := must.Get(http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body)))
 	res, err := http.DefaultClient.Do(r)
 	if err != nil {
@@ -75,7 +75,7 @@ func TestStreamDeltasCommandsAndCleanup(t *testing.T) {
 	}
 	// A lite map update receives only a status acknowledgement, while the
 	// standing stream gets the self-node delta. It never builds a full map.
-	lite := &tailcfg.MapRequest{NodeKey: ns[0].Key, Version: 68, OmitPeers: true, DiscoKey: key.NewDisco().Public()}
+	lite := &tailcfg.MapRequest{NodeKey: ns[0].Key, Version: MinCapabilityVersion, OmitPeers: true, DiscoKey: key.NewDisco().Public()}
 	w := httptest.NewRecorder()
 	s.serveMap(w, httptest.NewRequest("POST", "/map", bytes.NewReader(must.Get(json.Marshal(lite)))), ns[0].Machine)
 	if w.Code != 200 || w.Body.Len() != 0 {

@@ -1,6 +1,7 @@
 package recotestcontrol
 
 import (
+	"context"
 	"math/rand/v2"
 	"net/http"
 	"sync"
@@ -18,12 +19,14 @@ type mapWatch struct {
 	mu      sync.Mutex
 	pending reco.StructChanges[mapMeta]
 	wake    chan struct{}
-	done    chan struct{}
-	stop    sync.Once
+	ctx     context.Context
+	done    <-chan struct{}
+	cancel  context.CancelFunc
 }
 
 func newMapWatch() *mapWatch {
-	return &mapWatch{wake: make(chan struct{}, 1), done: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	return &mapWatch{wake: make(chan struct{}, 1), ctx: ctx, done: ctx.Done(), cancel: cancel}
 }
 func (m *mapWatch) signal() {
 	select {
@@ -31,7 +34,7 @@ func (m *mapWatch) signal() {
 	default:
 	}
 }
-func (m *mapWatch) close() { m.stop.Do(func() { close(m.done) }) }
+func (m *mapWatch) close() { m.cancel() }
 func (m *mapWatch) onChange(ev reco.StructEvent[mapMeta]) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -64,6 +67,7 @@ func (s *Server) serveMapStream(w http.ResponseWriter, r *http.Request, req *tai
 	initial, sub, err := reco.SubscribeStruct(s.graph, metaNode, reco.SubscribeOptions{}, watch.onChange)
 	if err != nil {
 		s.mu.Unlock()
+		watch.close()
 		http.Error(w, err.Error(), 500)
 		return
 	}
@@ -78,9 +82,19 @@ func (s *Server) serveMapStream(w http.ResponseWriter, r *http.Request, req *tai
 	}
 	s.condLocked().Broadcast()
 	s.mu.Unlock()
-	defer func() {
-		watch.close()
+	// Release demand even if encoding or a network write is blocked. A mailbox
+	// overflow can cancel under the graph lock, so unsubscribe asynchronously.
+	released := make(chan struct{})
+	context.AfterFunc(watch.ctx, func() {
 		sub.Unsubscribe()
+		watch.take()
+		close(released)
+	})
+	stopCancel := context.AfterFunc(r.Context(), watch.close)
+	defer func() {
+		stopCancel()
+		watch.close()
+		<-released
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		if s.sessions[nodeID] == watch {
@@ -113,6 +127,7 @@ func (s *Server) serveMapStream(w http.ResponseWriter, r *http.Request, req *tai
 		var res *tailcfg.MapResponse
 		if first {
 			res = fullResponse(req, initial.Value().Value())
+			initial = reco.Snapshot[reco.StructSnapshot[mapMeta]]{}
 			if res == nil {
 				return
 			}
