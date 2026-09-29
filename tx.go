@@ -9,6 +9,10 @@ type Tx struct {
 	err     error
 	configs map[*nodeDef]*nodeDef
 	holds   []*nodeDef
+
+	// Multiset mutation buffers are transaction-owned. Keep them separate from
+	// arbitrary Set values so batching never appends into a caller's snapshot.
+	multisetWrites map[*nodeDef]any
 }
 
 // Set assigns a data node within a transaction. For externally owned leaves

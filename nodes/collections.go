@@ -57,25 +57,25 @@ func combineSets[K comparable](className reco.NodeClassName, name string, inputs
 // countedSet retains contributor counts even for keys absent from the output.
 // Both the counts and published set use persistent storage.
 type countedSet[K comparable] struct {
-	counts reco.MapSnapshot[K, int]
+	counts reco.MultisetSnapshot[K]
 	value  reco.SetSnapshot[K]
 }
 
 func (s *countedSet[K]) apply(changes map[K]int, present func(int) bool) reco.SetSnapshot[K] {
-	var counts reco.MapDelta[K, int]
+	adjust := make(map[K]int64, len(changes))
+	for k, diff := range changes {
+		adjust[k] = int64(diff)
+	}
+	counts, err := s.counts.WithDelta(reco.MultisetDelta[K]{Adjust: adjust})
+	if err != nil {
+		panic(err) // An operator bug: contributors are nonnegative and fit int.
+	}
 	var delta reco.SetDelta[K]
 	for k, diff := range changes {
 		if diff == 0 {
 			continue
 		}
-		before, _ := s.counts.Get(k)
-		after := before + diff
-		if after == 0 {
-			counts.Remove = append(counts.Remove, k)
-		} else {
-			counts.Put = append(counts.Put, reco.MapEntry[K, int]{Key: k, Value: after})
-		}
-		was, now := present(before), present(after)
+		was, now := present(int(s.counts.Count(k))), present(int(counts.Count(k)))
 		if was == now {
 			continue
 		}
@@ -85,7 +85,7 @@ func (s *countedSet[K]) apply(changes map[K]int, present func(int) bool) reco.Se
 			delta.Remove = append(delta.Remove, k)
 		}
 	}
-	s.counts = s.counts.WithDelta(counts)
+	s.counts = counts
 	s.value = s.value.WithDelta(delta)
 	return s.value
 }

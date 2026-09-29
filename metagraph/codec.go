@@ -129,3 +129,40 @@ func Map[K comparable, V any](schema string) Codec[reco.MapSnapshot[K, V]] {
 			return nil
 		}}
 }
+
+// Multiset sends an initial clear/put snapshot and then absolute changed counts,
+// not additive adjustments. Entry arrays permit arbitrary JSON-encodable keys.
+// Zero removes a key; negative/overflowing counts are rejected atomically.
+// Absolute assignments avoid double-increments on replay, but protocol ordering
+// and base/version checks are still required to reject stale updates.
+func Multiset[K comparable](schema string) Codec[reco.MultisetSnapshot[K]] {
+	return Codec[reco.MultisetSnapshot[K]]{Name: "multiset/" + schema,
+		Encode: func(prev, cur reco.MultisetSnapshot[K], full bool) (json.RawMessage, error) {
+			d := mapDelta[K, int64]{Clear: full}
+			if full {
+				for k, n := range cur.All() {
+					d.Put = append(d.Put, mapEntry[K, int64]{Key: k, Value: n})
+				}
+			} else {
+				for c := range cur.ChangesSince(prev) {
+					d.Put = append(d.Put, mapEntry[K, int64]{Key: c.Key, Value: c.After})
+				}
+			}
+			return json.Marshal(d)
+		},
+		Apply: func(tx *reco.Tx, n reco.Node[reco.MultisetSnapshot[K]], raw json.RawMessage, full bool) error {
+			var d *mapDelta[K, int64]
+			if err := json.Unmarshal(raw, &d); err != nil {
+				return err
+			}
+			if d == nil || full && !d.Clear {
+				return errors.New("multiset snapshot is null or lacks clear")
+			}
+			md := reco.MultisetDelta[K]{Clear: d.Clear, Remove: d.Remove}
+			for _, e := range d.Put {
+				md.Put = append(md.Put, reco.MultisetEntry[K]{Key: e.Key, Count: e.Value})
+			}
+			return reco.ApplyMultisetDelta(tx, n, md)
+		},
+	}
+}

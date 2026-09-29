@@ -10,8 +10,8 @@
 //
 // Reco stands for reactive computation. It provides typed, in-process
 // reactive dataflow graphs.
-// Declare mutable leaves with Data, SetData, MapData, or StructData, and derived
-// nodes with Func. Register an output with Graph.Register to register its
+// Declare mutable leaves with Data, SetData, MultisetData, MapData, or StructData,
+// and derived nodes with Func. Register an output with Graph.Register to register its
 // dependencies too.
 // Graph.Update applies a transaction, recomputes affected nodes in dependency
 // order, and delivers subscription events after the graph has settled.
@@ -32,9 +32,15 @@
 // Consume collection changes with ChangesSince and publish one WithDelta batch
 // per evaluation to preserve the incremental fast path. See the Operator example.
 //
-// Published values must be immutable. SetSnapshot and MapSnapshot provide
-// structurally shared storage, native Go iterators, and atomic delta application.
+// Published values must be immutable. SetSnapshot, MultisetSnapshot and
+// MapSnapshot provide structurally shared storage, native Go iterators, and
+// atomic delta application.
 // Custom immutable types may implement ValueEqualer and VersionedValue.
+// Multisets store positive int64 multiplicities, with signed atomic adjustments
+// and checked underflow/overflow. Len counts distinct keys; All yields key/count
+// pairs. nodes.CountBy and nodes.GroupCounts aggregate contributors, and
+// nodes.Distinct suppresses count changes that do not cross zero. Indexes and
+// counted classes can avoid expanding relationships into every node pair.
 //
 // # Demand-driven lifetimes
 //
@@ -55,7 +61,7 @@
 //
 // BindDurable optionally binds a registered data node to an application-supplied
 // loader. Its value is cached only while observed, and reloaded when demand
-// returns. This works for scalars, sets, maps, records, and custom immutable
+// returns. This works for scalars, sets, multisets, maps, records, and custom immutable
 // values. Read/Subscribe return load errors without retaining partial demand.
 // Set and collection mutation helpers reject these externally owned leaves.
 // Commit backing storage inside Graph.Update, then use UpdateDurable to patch
@@ -73,8 +79,9 @@
 // obtains an initial snapshot and watches settled field/collection changes.
 // StructChanges.Then coalesces contiguous events without scanning unchanged
 // collection contents. Use MapFieldChanges and SetFieldChanges on the composed
-// batch rather than comparing its endpoint collections. See the SubscribeStruct
-// example for an incremental stream-encoding boundary.
+// batch rather than comparing its endpoint collections; MultisetFieldChanges
+// provides the same touched-key behavior for counted fields. See the
+// SubscribeStruct example for an incremental stream-encoding boundary.
 //
 // # Experimental remote watches
 //

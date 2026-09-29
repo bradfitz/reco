@@ -66,6 +66,10 @@ func TestMapProjectionDeltaWork(t *testing.T) {
 	}
 }
 
+func TestIndexDeltaWork(t *testing.T) {
+	reco.CheckIndexDeltaWork(t, nodes.GroupCounts[int, int, int], nodes.InvertSets[int, int])
+}
+
 func BenchmarkSetOperationDelta(b *testing.B) {
 	for _, op := range setAlgebraNodes {
 		b.Run(op.name, func(b *testing.B) { reco.BenchSetOperationDelta(b, op.build, op.name == "Intersection") })
