@@ -11,6 +11,10 @@ type GraphStats struct {
 	Nodes, Functions, ActiveFunctions, CachedFunctions, Subscriptions int
 	DurableNodes, CachedDurableNodes                                  int
 	Evaluations                                                       uint64
+	// InputChecks counts dependency readiness checks, including first-demand
+	// initialization. InputReads counts values requested by computations (also
+	// including Func's struct adapter). They measure work, not elapsed time.
+	InputChecks, InputReads uint64
 }
 
 // Stats returns a constant-time snapshot of graph counters.
@@ -24,6 +28,7 @@ func (g *Graph) Stats() GraphStats {
 	return GraphStats{Nodes: len(g.nodes), Functions: g.functionCount,
 		ActiveFunctions: active, CachedFunctions: len(g.funcs),
 		Subscriptions: g.subCount, Evaluations: g.evaluations,
+		InputChecks: g.inputChecks, InputReads: g.inputReads,
 		DurableNodes: len(g.loaders), CachedDurableNodes: g.cachedDurable}
 }
 

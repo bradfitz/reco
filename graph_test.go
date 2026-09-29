@@ -215,7 +215,7 @@ func TestCycleRejected(t *testing.T) {
 	})
 	a.def.kind = nodeFunc
 	a.def.deps = []depBinding{{name: "B", node: b.def, typ: typeOf[int]()}}
-	a.def.compute = func(Eval, map[*nodeDef]nodeValue) nodeValue {
+	a.def.compute = func(Eval) nodeValue {
 		return nodeValue{value: 1, valid: true}
 	}
 

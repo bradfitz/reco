@@ -26,6 +26,7 @@ type Graph struct {
 	cachedDurable           int
 	functionCount, subCount int
 	evaluations             uint64
+	inputChecks, inputReads uint64
 }
 
 type nodeName struct {
@@ -44,9 +45,47 @@ type GraphOptions struct {
 }
 
 type funcState struct {
-	compute computeFunc
-	seen    Version
-	ran     bool
+	compute    computeFunc
+	inputs     map[*nodeDef]*nodeDef // declared handle -> graph instance
+	byInstance map[*nodeDef]*inputState
+	unready    int
+	ran        bool
+	evaluating bool
+}
+
+type inputState struct {
+	handles []Dependency // distinct declarations, including scoped aliases
+	ready   bool
+}
+
+func (state *funcState) evaluate(e Eval) nodeValue {
+	state.evaluating = true
+	defer func() { state.evaluating = false }()
+	return state.compute(e)
+}
+
+// initializeInputs pays for the complete input list once per active compute
+// instance. Afterwards readiness is maintained only along changed edges.
+func (g *Graph) initializeInputs(state *funcState, binding *nodeDef) {
+	state.inputs = make(map[*nodeDef]*nodeDef, len(binding.deps))
+	state.byInstance = make(map[*nodeDef]*inputState, len(binding.deps))
+	for _, dep := range binding.deps {
+		name := dep.handle.recoTypedNode().def
+		if state.inputs[name] != nil {
+			continue
+		}
+		state.inputs[name] = dep.node
+		input := state.byInstance[dep.node]
+		if input == nil {
+			g.inputChecks++
+			input = &inputState{ready: g.nodes[dep.node].valid}
+			state.byInstance[dep.node] = input
+			if !input.ready {
+				state.unready++
+			}
+		}
+		input.handles = append(input.handles, dep.handle)
+	}
 }
 
 // NewGraph creates an empty, eager graph instance. See NewGraphWithOptions for
@@ -190,7 +229,7 @@ func (g *Graph) Update(fn func(*Tx) error) error {
 		v = valueWithVersion(v, g.version)
 		g.nodes[def] = nodeValue{value: v, version: g.version, valid: true}
 		for user := range g.users[def] {
-			dirty.add(user)
+			dirty.addInput(user, def)
 		}
 	}
 	g.recompute(before, dirty)
@@ -210,24 +249,39 @@ func (g *Graph) recompute(before map[*nodeDef]nodeValue, dirty *dirtyQueue) {
 			if binding.newCompute != nil {
 				state.compute = binding.newCompute()
 			}
+			g.initializeInputs(state, binding)
 			g.funcs[def] = state
+		} else {
+			for _, dep := range dirty.changed[def] {
+				input := state.byInstance[dep]
+				g.inputChecks++
+				ready := g.nodes[dep].valid
+				if ready != input.ready {
+					if ready {
+						state.unready--
+					} else {
+						state.unready++
+					}
+					input.ready = ready
+				}
+			}
 		}
-		ready, needsCompute := true, !state.ran
-		for _, dep := range binding.deps {
-			v := g.nodes[dep.node]
-			ready = ready && v.valid
-			needsCompute = needsCompute || v.version > state.seen
-		}
-		if !ready || !needsCompute {
+		if state.unready != 0 || state.ran && len(dirty.changed[def]) == 0 {
 			continue
 		}
-		depVals := make(map[*nodeDef]nodeValue, len(binding.deps))
-		for _, dep := range binding.deps {
-			depVals[dep.node] = g.nodes[dep.node]
+		var changed []Dependency
+		if !state.ran {
+			for _, input := range state.byInstance {
+				changed = append(changed, input.handles...)
+			}
+		} else {
+			for _, dep := range dirty.changed[def] {
+				changed = append(changed, state.byInstance[dep].handles...)
+			}
 		}
-		next := state.compute(Eval{graph: g, inputs: depVals}, depVals)
+		next := state.evaluate(Eval{graph: g, state: state, changed: changed})
 		g.evaluations++
-		state.seen, state.ran = g.version, true
+		state.ran = true
 		if !nodeValuesEqual(g.nodes[def], next) {
 			before[def] = g.nodes[def]
 			g.version++
@@ -236,7 +290,7 @@ func (g *Graph) recompute(before map[*nodeDef]nodeValue, dirty *dirtyQueue) {
 			next.valid = true
 			g.nodes[def] = next
 			for user := range g.users[def] {
-				dirty.add(user)
+				dirty.addInput(user, def)
 			}
 		}
 	}
@@ -248,6 +302,17 @@ type dirtyQueue struct {
 	nodes     []*nodeDef
 	rank      map[*nodeDef]int
 	scheduled map[*nodeDef]bool
+	changed   map[*nodeDef][]*nodeDef
+}
+
+func (q *dirtyQueue) addInput(user, input *nodeDef) {
+	if q.changed == nil {
+		q.changed = make(map[*nodeDef][]*nodeDef)
+	}
+	// A node publishes at most once per transaction. g.users deduplicates
+	// declared aliases, so each changed graph instance appears exactly once.
+	q.changed[user] = append(q.changed[user], input)
+	q.add(user)
 }
 
 func (q *dirtyQueue) add(def *nodeDef) {

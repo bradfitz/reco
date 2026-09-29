@@ -31,6 +31,13 @@
 // Allocate incremental caches inside the operator's per-instance compute factory.
 // Consume collection changes with ChangesSince and publish one WithDelta batch
 // per evaluation to preserve the incremental fast path. See the Operator example.
+// Eval.ChangedInputs identifies changed dependency handles without scanning all
+// declared inputs. The first evaluation reports all inputs; later evaluations
+// report only value/result-status changes. It retains original declaration
+// handles across scoping. Input reads the current settled value in O(1) expected
+// time. Readiness and scope mapping do not rebuild input tables on point edits.
+// Func still populates every field of its dependency struct; use Operator for
+// wide, incrementally maintained computations. See the ChangedInputs example.
 //
 // Published values must be immutable. SetSnapshot, MultisetSnapshot and
 // MapSnapshot provide structurally shared storage, native Go iterators, and

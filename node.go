@@ -47,7 +47,7 @@ func (n Node[T]) recoTypedNode() typedNode {
 	if n.def == nil {
 		panic("reco: zero node handle")
 	}
-	return typedNode{def: n.def, typ: typeOf[T]()}
+	return typedNode{def: n.def, typ: typeOf[T](), handle: n}
 }
 
 // Data creates a mutable data node.
@@ -86,10 +86,7 @@ func mustClassName(className NodeClassName) {
 }
 
 func sameTypeNode[T any](n Node[T]) typedNode {
-	if n.def == nil {
-		panic("reco: zero node handle")
-	}
-	return typedNode{def: n.def, typ: typeOf[T]()}
+	return n.recoTypedNode()
 }
 
 type nodeKind int
@@ -114,11 +111,15 @@ type depBinding struct {
 	name string
 	node *nodeDef
 	typ  typeID
+	// handle is the name used by the computation. Scoping changes node (the
+	// graph instance) but preserves handle (the original declared input).
+	handle Dependency
 }
 
 type typedNode struct {
-	def *nodeDef
-	typ typeID
+	def    *nodeDef
+	typ    typeID
+	handle Dependency // canonical Node[T] value, not a mutable *Node[T]
 }
 
 func (d *nodeDef) String() string {

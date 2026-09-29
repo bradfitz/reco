@@ -42,7 +42,7 @@ func (h *countingHasher) check(t *testing.T, allowed []int, budget int) {
 
 func countCompute[T any](node Node[T], calls *int) {
 	wrap := func(fn computeFunc) computeFunc {
-		return func(eval Eval, vals map[*nodeDef]nodeValue) nodeValue { *calls++; return fn(eval, vals) }
+		return func(eval Eval) nodeValue { *calls++; return fn(eval) }
 	}
 	if factory := node.def.newCompute; factory != nil {
 		node.def.newCompute = func() computeFunc { return wrap(factory()) }

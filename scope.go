@@ -42,23 +42,8 @@ func (s *Scope) instance(def *nodeDef) *nodeDef {
 		n.deps[i] = dep
 		n.deps[i].node = s.instance(dep.node)
 	}
-	// Definitions' closures refer to their original input handles. Present
-	// those names while sourcing values from this instance's dependencies.
-	wrap := func(compute computeFunc) computeFunc {
-		return func(e Eval, values map[*nodeDef]nodeValue) nodeValue {
-			inputs := make(map[*nodeDef]nodeValue, len(def.deps))
-			for i, dep := range def.deps {
-				inputs[dep.node] = values[n.deps[i].node]
-			}
-			e.inputs = inputs
-			return compute(e, inputs)
-		}
-	}
-	if def.compute != nil {
-		n.compute = wrap(def.compute)
-	}
-	if def.newCompute != nil {
-		n.newCompute = func() computeFunc { return wrap(def.newCompute()) }
-	}
+	// depBinding.handle retains the declaration's original input names. Eval
+	// resolves them directly through a per-active-instance index; there is no
+	// per-evaluation input-table copy or scoped compute wrapper.
 	return &n
 }

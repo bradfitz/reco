@@ -15,14 +15,16 @@ func typeOf[T any]() reflect.Type {
 }
 
 // Eval represents one synchronous node evaluation. Use Input to read its
-// declared dependencies. It is not a cancellation or deadline context.
+// declared dependencies; ChangedInputs identifies which dependencies changed.
+// It is not a cancellation or deadline context.
 // Do not retain an Eval after the computation returns.
 type Eval struct {
-	graph  *Graph
-	inputs map[*nodeDef]nodeValue
+	graph   *Graph
+	state   *funcState
+	changed []Dependency
 }
 
-type computeFunc func(Eval, map[*nodeDef]nodeValue) nodeValue
+type computeFunc func(Eval) nodeValue
 
 type nodeValue struct {
 	value     any
@@ -131,15 +133,15 @@ func compileFunc[DepsT any, Out any](deps any, compute func(Eval, DepsT) Result[
 		if node.typ != f.typ {
 			return nil, nil, fmt.Errorf("reco: dependency %s has type %s, want %s", f.name, node.typ, f.typ)
 		}
-		bindings[i] = depBinding{name: f.name, node: node.def, typ: f.typ}
+		bindings[i] = depBinding{name: f.name, node: node.def, typ: f.typ, handle: node.handle}
 		bindingByField[i] = i
 	}
 
-	adapter := func(eval Eval, vals map[*nodeDef]nodeValue) nodeValue {
+	adapter := func(eval Eval) nodeValue {
 		var in DepsT
 		inVal := reflect.ValueOf(&in).Elem()
 		for i, f := range shape.fields {
-			depVal := vals[bindings[bindingByField[i]].node]
+			depVal := eval.input(bindings[bindingByField[i]].node)
 			if inline {
 				if depVal.value != nil {
 					inVal.Field(f.index).Set(reflect.ValueOf(depVal.value))
